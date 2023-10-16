@@ -1,4 +1,4 @@
-module NNSurrogate
+# module NNSurrogate
 
 using Plots
 using Statistics
@@ -9,9 +9,9 @@ using LinearAlgebra
 # using SurrogatesFlux
 # using Lathe.preprocess: TrainTestSplit
 
-export NN_Data, NN_Config, NN_Result
-export generate_data, normalise_data, load_data
-export NN_train, NN_compare, plot_learning_curve
+# export NN_Data, NN_Config, NN_Result
+# export generate_data, normalise_data, load_data
+# export NN_train, NN_compare, plot_learning_curve
 
 mutable struct NN_Data
     x_train::Matrix
@@ -80,10 +80,19 @@ end
 # define the loss function with L2 regularization
 function loss_l2(x, y, model, lambda)
     
-    huber_loss = Flux.huber_loss(model(x), y) # huber loss
+    mse_loss = Flux.mse(model(x), y) # mean squared error
     l2_loss = sum(p -> sum(abs2, p), params(model)) # L2 regularization term
      
-    return huber_loss + 0.5 * lambda / length(y) * l2_loss
+    return mse_loss + 0.5 * lambda / length(y) * l2_loss
+end
+
+# define the loss function with L1 regularization
+function loss_l1(x, y, model, lambda)  
+
+    mse_loss = Flux.mse(model(x), y) # mean squared error
+    l1_loss = sum(p -> sum(abs, p), params(model)) # L1 regularization term
+
+    return mse_loss + lambda / length(y) * l1_loss
 end
 
 # define the relative root mean square error (RRMSE)
@@ -120,12 +129,16 @@ function NN_train(data::NN_Data, c::NN_Config)
     push!(chain, Dense(c.layer[1], c.layer[2]))
     if c.batch_norm
         push!(chain, BatchNorm(c.layer[2], c.af[1]))    # add batch normalization layer
+    else
+        push!(chain, c.af[1])   # add activation function
     end
     push!(chain, Dropout(c.keep_prob) )   # add dropout layer to prevent overfitting   
     for i in 2:length(c.af)
         push!(chain, Dense(c.layer[i], c.layer[i+1]))  # create a traditional fully connected layer
         if c.batch_norm
-            push!(chain,BatchNorm(c.layer[i+1], c.af[i]))   # add batch normalization layer to stabilize the network
+            push!(chain, BatchNorm(c.layer[i+1], c.af[i]))   # add batch normalization layer to stabilize the network
+        else
+            push!(chain, c.af[i])   # add activation function
         end 
     end
     result.model = Chain(chain...)
@@ -187,7 +200,7 @@ function NN_compare(data::NN_Data, configs::Vector{NN_Config})
     for i in 1:n
         results[i] = NN_train(data, configs[i])
         testmode!(results[i].model)  # switch to test mode
-        results[i].test_err = [Flux.huber_loss(results[i].model(x_test), y_test), loss_rrmse(x_test, y_test, results[i].model), loss_mape(x_test, y_test, results[i].model)]
+        results[i].test_err = [Flux.mse(results[i].model(x_test), y_test), loss_rrmse(x_test, y_test, results[i].model), loss_mape(x_test, y_test, results[i].model)]
         results_cp[(configs[i])] = results[i]
     end
     
@@ -211,4 +224,4 @@ function plot_learning_curve(config::NN_Config, loss_hist::Vector)
     )
 end
 
-end # module
+# end # module
