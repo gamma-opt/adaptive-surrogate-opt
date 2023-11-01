@@ -74,7 +74,7 @@ function normalise_data(data::NN_Data)
     data.x_train = Flux.normalise(data.x_train)  # normalise the training set
     data.x_test = (data.x_test .- μ) ./ σ  # normalise the test set using the mean and standard deviation of the training set
     
-    return data
+    return data, μ, σ
 end
 
 # define the loss function with L2 regularization
@@ -120,9 +120,6 @@ function NN_train(data::NN_Data, c::NN_Config)
     train_err_batch = Float64[]
     train_err_epoch = Float64[]
     train_err_fold = Float64[]
-    
-    # normalise the data
-    data = normalise_data(data) 
 
     # define model architecture
     chain = []
