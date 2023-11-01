@@ -7,6 +7,11 @@ using CSV, DataFrames
 include("../../src/NNSurrogate.jl")
 include("../../src/NNJuMP.jl")
 
+"""
+- Blade max-temperature simulation model (6 variables)
+"""
+
+
 # mat"addpath(pwd(), '../ThermalAnalysisOfJetEngineTurbineBlade')"  # add the path of the MATLAB code
 
 # # arguments: T_air, T_gas, h_air, h_gas_pressureside, h_gas_suctionside, h_gas_tip
@@ -39,8 +44,10 @@ data_temp.y_train = train_data[2]
 data_temp.x_test = test_data[1]
 data_temp.y_test = test_data[2]
 
-config1_temp = NN_Config([6,50,50,1], [relu, relu, identity], false, 0.01, 0.0, Flux.Optimise.Optimiser(Adam(0.1, (0.9, 0.999)), ExpDecay(1.0)), 1, 800, 1000)
-config2_temp = NN_Config([6,512,256,1], [relu, relu, identity], false, 0.01, 0.0, Adam(), 1, 800, 1000)
+# data_temp, μ, σ = normalise_data(data_temp) 
+
+config1_temp = NN_Config([6,50,50,1], [relu, relu, identity], false, 0.01, 0.0, Flux.Optimise.Optimiser(Adam(0.1, (0.9, 0.999)), ExpDecay(1.0)), 1, 800, 5000)
+config2_temp = NN_Config([6,512,256,1], [relu, relu, identity], false, 0.01, 0.0, Adam(), 1, 800, 5000)
 configs_temp = [config1_temp, config2_temp]
 
 # trian the nerual net
@@ -56,8 +63,8 @@ plot_learning_curve(config1_temp, results_temp[config1_temp].err_hist)
 NN_model = results_temp[config1_temp].model
 
 # bounds of the input layer, and the other layers (arbitrary large big-M)
-L_bounds = vcat(Float32[120, 900, 20, 40, 30, 10], fill(Float32(-1e6), 201))
-U_bounds = vcat(Float32[180, 1200, 40, 60, 50, 30], fill(Float32(1e6), 201))
+L_bounds = vcat(Float32[120, 900, 20, 40, 30, 10], fill(Float32(-1e6), 101))
+U_bounds = vcat(Float32[180, 1200, 40, 60, 50, 30], fill(Float32(1e6), 101))
 
 # convert the trained nerual net to a JuMP model
 MILP_model = JuMP_Model(NN_model, L_bounds, U_bounds)
@@ -65,4 +72,4 @@ MILP_model = JuMP_Model(NN_model, L_bounds, U_bounds)
 optimize!(MILP_model)
 
 println(objective_value(MILP_model))
-println(value.(MILP_model[:x])) 
+println(value.(MILP_model[:x]))
