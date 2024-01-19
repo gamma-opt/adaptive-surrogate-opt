@@ -76,3 +76,11 @@ function JuMP_Model(NN::Chain, L_bounds::Vector{Float32}, U_bounds::Vector{Float
     return model
 
 end
+
+# get the current MIP model solution x^*
+
+function get_x_star(MILP_model::Model)
+
+    return [value.(MILP_model[:x][0,i]) for i in 1:length(MILP_model[:x][0,:])]
+
+end
