@@ -26,11 +26,12 @@ mutable struct NN_Config
     af::Vector           # activation functions
     batch_norm::Bool     # whether to use batch normalization
     lambda::Float64      # regularization parameter (need to be tuned)
-    keep_prob::Float64   # dropout rate
+    dropout_rate::Float64   # dropout rate
     opt::Any             # optimiser
     k::Int               # Number of splits
     batch_size::Int      # batch size
     epochs::Int          # number of epochs
+    freeze::Int          # number of initial layers to freeze
 end
 
 mutable struct NN_Result
@@ -113,7 +114,7 @@ function loss_mape(x, y, model)
 end
 
 # define the function processing the training of Neural Network
-function NN_train(data::NN_Data, c::NN_Config)
+function NN_train(data::NN_Data, c::NN_Config; trained_model::Chain = Chain())
     
     # initialise the reultes
     result = NN_Result()
@@ -129,7 +130,7 @@ function NN_train(data::NN_Data, c::NN_Config)
     else
         push!(chain, c.af[1])   # add activation function
     end
-    push!(chain, Dropout(c.keep_prob) )   # add dropout layer to prevent overfitting   
+    push!(chain, Dropout(c.dropout_rate) )   # add dropout layer to prevent overfitting   
     for i in 2:length(c.af)
         push!(chain, Dense(c.layer[i], c.layer[i+1]))  # create a traditional fully connected layer
         if c.batch_norm
@@ -138,10 +139,15 @@ function NN_train(data::NN_Data, c::NN_Config)
             push!(chain, c.af[i])   # add activation function
         end 
     end
-    result.model = Chain(chain...)
 
     # track parameters
-    ps = params(result.model)
+    if c.freeze > 0     
+        result.model = trained_model                    # use the trained model as the initial model
+        ps = params(result.model[(c.freeze+1)*2:end])   # freeze the first few layers
+    else
+        result.model = Chain(chain...)                  # create a new model    
+        ps = params(result.model)                       
+    end
 
     # define the loss function with L2 regularization
     loss(x,y) = loss_l2(x, y, result.model, c.lambda)
@@ -163,6 +169,10 @@ function NN_train(data::NN_Data, c::NN_Config)
         end      
         result.err_hist = vec(mean(reshape(train_err_epoch, c.k, c.epochs), dims = 1))
         result.train_err = [mean(train_err_fold), loss_rrmse(data.x_train, data.y_train, result.model), loss_mape(data.x_train, data.y_train, result.model)]
+        
+        # switch to test mode
+        testmode!(result.model)  
+        result.test_err = [Flux.mse(result.model(data.x_test), data.y_test), loss_rrmse(data.x_test, data.y_test, result.model), loss_mape(data.x_test, data.y_test, result.model)]
     else   
         # imply no cross validation
         for epoch in 1:c.epochs
@@ -177,13 +187,25 @@ function NN_train(data::NN_Data, c::NN_Config)
         trainmode!(result.model)
         result.err_hist = train_err_epoch
         result.train_err = [train_err_epoch[end], loss_rrmse(data.x_train, data.y_train, result.model), loss_mape(data.x_train, data.y_train, result.model) ]
+
+        # switch to test mode
+        testmode!(result.model)
+        result.test_err = [Flux.mse(result.model(data.x_test), data.y_test), loss_rrmse(data.x_test, data.y_test, result.model), loss_mape(data.x_test, data.y_test, result.model)]
     end   
 
     return result
 end
 
+# define a fucntion to show the results of the training
+function NN_results(c::NN_Config, result::NN_Result)   
+    println("Layers: $(c.layer), Epochs: $(c.epochs), Lambda: $(c.lambda), Dropout rate: $(c.dropout_rate)")    
+    println("    Train Error[MSE, RRMSE, MAPE]: $(result.train_err)")
+    println("    Test Error [MSE, RRMSE, MAPE]: $(result.test_err)")
+end
+
+
 # define a function to compare train errors and test errors within different NN configs
-function NN_compare(data::NN_Data, configs::Vector{NN_Config})
+function NN_compare(data::NN_Data, configs::Vector{NN_Config}; trained_model::Chain = Chain())
     
     x_test = data.x_test
     y_test = data.y_test
@@ -195,7 +217,7 @@ function NN_compare(data::NN_Data, configs::Vector{NN_Config})
     results_cp = Dict()
 
     for i in 1:n
-        results[i] = NN_train(data, configs[i])
+        results[i] = NN_train(data, configs[i], trained_model = trained_model)
         testmode!(results[i].model)  # switch to test mode
         results[i].test_err = [Flux.mse(results[i].model(x_test), y_test), loss_rrmse(x_test, y_test, results[i].model), loss_mape(x_test, y_test, results[i].model)]
         results_cp[(configs[i])] = results[i]
