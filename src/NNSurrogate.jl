@@ -21,6 +21,12 @@ mutable struct NN_Data
     NN_Data() = new()
 end
 
+mutable struct Sampling_Config
+    n_samples::Int
+    lb::Vector
+    ub::Vector
+end
+
 mutable struct NN_Config
     layer::Vector{Int}   # layers' sizes
     af::Vector           # activation functions
@@ -42,17 +48,17 @@ mutable struct NN_Result
     NN_Result() = new()
 end
 
-# define the function converting Vector{Tuple} to Matrix
+# convert Vector{Tuple} to Matrix
 T2M(x::Vector) = reshape(collect(Iterators.flatten(x)), length(x[1]), length(x))
 
-# define the function to generate data for the training and testing
-function generate_data(f::Function, bounds::Vector, n_samples::Int, sampling_method::Any, splits::Float64)
+# generate data for the training and testing
+function generate_data(f::Function, sampling_config::Sampling_Config, sampling_method::Any, splits::Float64)
     
     # initialise the data
     data = NN_Data()
 
     # sample and generate the train set 
-    x_tuple = sample(n_samples, bounds..., sampling_method)
+    x_tuple = Surrogates.sample(sampling_config.n_samples, [sampling_config.lb, sampling_config.ub]..., sampling_method)
     x = T2M(x_tuple)  # convert Vector{Tuple} to Matrix
     y = T2M(f.(x_tuple))  # generate the corresponding output
 
@@ -60,10 +66,10 @@ function generate_data(f::Function, bounds::Vector, n_samples::Int, sampling_met
     cv_data, test_data = Flux.splitobs((x, y), at = splits)
 
     # assign the data to the struct
-    data.x_train = cv_data[1]
-    data.y_train = cv_data[2]
-    data.x_test = test_data[1]
-    data.y_test = test_data[2]
+    data.x_train = Float32.(cv_data[1])
+    data.y_train = Float32.(cv_data[2])
+    data.x_test = Float32.(test_data[1])
+    data.y_test = Float32.(test_data[2])
 
     return data
 end
@@ -113,14 +119,14 @@ function loss_mape(x, y, model)
 
 end
 
-# define the function processing the training of Neural Network
+# process the training of Neural Network
 function NN_train(data::NN_Data, c::NN_Config; trained_model::Chain = Chain())
     
     # initialise the reultes
     result = NN_Result()
-    train_err_batch = Float64[]
-    train_err_epoch = Float64[]
-    train_err_fold = Float64[]
+    train_err_batch = Float32[]
+    train_err_epoch = Float32[]
+    train_err_fold = Float32[]
 
     # define model architecture
     chain = []
@@ -149,7 +155,7 @@ function NN_train(data::NN_Data, c::NN_Config; trained_model::Chain = Chain())
         ps = params(result.model)                       
     end
 
-    # define the loss function with L2 regularization
+    # set the loss function
     loss(x,y) = loss_l2(x, y, result.model, c.lambda)
     
     # define the training process
@@ -166,7 +172,8 @@ function NN_train(data::NN_Data, c::NN_Config; trained_model::Chain = Chain())
                 push!(train_err_epoch, train_err_batch[end])                                 
             end
             push!(train_err_fold, train_err_epoch[end])           
-        end      
+        end 
+           
         result.err_hist = vec(mean(reshape(train_err_epoch, c.k, c.epochs), dims = 1))
         result.train_err = [mean(train_err_fold), loss_rrmse(data.x_train, data.y_train, result.model), loss_mape(data.x_train, data.y_train, result.model)]
         
@@ -184,9 +191,9 @@ function NN_train(data::NN_Data, c::NN_Config; trained_model::Chain = Chain())
             end
             push!(train_err_epoch, train_err_batch[end])                                  
         end
-        trainmode!(result.model)
+        
         result.err_hist = train_err_epoch
-        result.train_err = [train_err_epoch[end], loss_rrmse(data.x_train, data.y_train, result.model), loss_mape(data.x_train, data.y_train, result.model) ]
+        result.train_err = [train_err_epoch[end], loss_rrmse(data.x_train, data.y_train, result.model), mean(abs.((result.model(data.x_train) .- data.y_train) ./ data.y_train)) ]
 
         # switch to test mode
         testmode!(result.model)
@@ -196,7 +203,7 @@ function NN_train(data::NN_Data, c::NN_Config; trained_model::Chain = Chain())
     return result
 end
 
-# define a fucntion to show the results of the training
+# print the results of the training
 function NN_results(c::NN_Config, result::NN_Result)   
     println("Layers: $(c.layer), Epochs: $(c.epochs), Lambda: $(c.lambda), Dropout rate: $(c.dropout_rate)")    
     println("    Train Error[MSE, RRMSE, MAPE]: $(result.train_err)")
@@ -204,7 +211,7 @@ function NN_results(c::NN_Config, result::NN_Result)
 end
 
 
-# define a function to compare train errors and test errors within different NN configs
+# compare train errors and test errors within different NN configs
 function NN_compare(data::NN_Data, configs::Vector{NN_Config}; trained_model::Chain = Chain())
     
     x_test = data.x_test
@@ -226,7 +233,214 @@ function NN_compare(data::NN_Data, configs::Vector{NN_Config}; trained_model::Ch
     return results_cp
 end
 
-# define a function to plot the learning curve based on the loss history
+
+function find_max_errs(data::NN_Data, model::Chain, x_star::Vector{Float64})
+    
+    # Concatenate training and testing data
+    x = hcat(data.x_train, data.x_test)
+    y = hcat(data.y_train, data.y_test)
+
+    # Calculate the errors (absolute difference)
+    errors = abs.(model(x) .- y)
+
+    # Initialize vectors to store the point with maximum error below and above x_star for each dimension
+    x_belows = copy(x_star)
+    x_aboves = copy(x_star)
+
+    # Iterate through each dimension to find the point with max error below and above x_star
+    for i in 1:length(x_star)
+        # Identify indices where x is below and above x_star[i]
+        below_indices = findall(x[i, :] .< x_star[i])
+        above_indices = findall(x[i, :] .> x_star[i])
+
+        # Calculate errors for below and above points
+        if !isempty(below_indices)
+            below_errors = errors[below_indices]
+            max_below_idx = below_indices[argmax(below_errors)]
+            x_belows[i] = x[i, max_below_idx]  # Store the i-th dimension of the point with the maximum below error
+        else
+            x_belows[i] = x_star[i]
+        end
+
+        if !isempty(above_indices)
+            above_errors = errors[above_indices]
+            max_above_idx = above_indices[argmax(above_errors)]
+            x_aboves[i] = x[i, max_above_idx]  # Store the i-th dimension of the point with the maximum above error
+        else
+            x_aboves[i] = x_star[i]
+        end
+    end
+
+    return x_belows, x_aboves
+end
+
+
+# calculate the segmented errors for a certain dimension
+function calculate_segmented_errs(x, errors, x_star, n_segments)
+    
+    min_val, max_val = minimum(x), maximum(x)
+    bin_edges = range(min_val, stop=max_val, length=n_segments+1)
+
+    # Initialize tracking variables for maximum error and corresponding midpoints
+    max_error_above = -Inf
+    max_error_below = -Inf
+    mid_point_above = x_star
+    mid_point_below = x_star
+    
+    # Initialize an array to store errors for all segments
+    all_segment_errors = Vector{Vector{Float32}}(undef, n_segments)
+
+    for i = 1:n_segments
+        in_segment = (x .>= bin_edges[i]) .& (x .< bin_edges[i+1])
+        segment_errors = errors[in_segment]
+
+        # Store segment errors
+        all_segment_errors[i] = segment_errors
+
+        # Skip the loop iteration if the segment is empty
+        if isempty(segment_errors)
+            continue
+        end
+
+        segment_mean_error = mean(segment_errors)
+        segment_mid_point = (bin_edges[i] + bin_edges[i+1]) / 2
+
+        # Update maximum errors and midpoints for segments above and below x_star
+        if segment_mid_point > x_star && segment_mean_error > max_error_above
+            max_error_above = segment_mean_error
+            mid_point_above = segment_mid_point
+        end
+        if segment_mid_point < x_star && segment_mean_error > max_error_below
+            max_error_below = segment_mean_error
+            mid_point_below = segment_mid_point
+        end
+    end
+
+    # Return the midpoints for the highest error segments and errors for all segments
+    return mid_point_below, mid_point_above, all_segment_errors
+end
+
+function find_max_segmented_errs(data::NN_Data, model::Chain, x_star::Vector{Float64}, n_segments::Int)
+    
+    # Concatenate training and testing data
+    x = hcat(data.x_train, data.x_test)
+    y = hcat(data.y_train, data.y_test)
+
+    # Initialize vectors to store x_below and x_above
+    x_belows = Float64[]
+    x_aboves = Float64[]
+    # Calculate errors for each sample
+    errors = abs.(model(x) .- y)
+
+    for i in 1:size(x, 1)
+        x_below, x_above, _ = calculate_segmented_errs(x[i,:], errors, x_star[i], n_segments)
+        push!(x_belows, x_below)
+        push!(x_aboves, x_above)
+    end
+
+    return x_belows, x_aboves
+
+end
+
+# plot segmented errors 
+function plot_segmented_errs(data::NN_Data, model::Chain, x_star::Vector{Float64}, n_segments::Int) 
+    
+    # Concatenate training and testing data
+    x = hcat(data.x_train, data.x_test)
+    y = hcat(data.y_train, data.y_test)
+
+    # Calculate errors for each sample
+    errors = abs.(model(x) .- y)
+
+    # Create an empty array to hold all the individual plots
+    plots_array = []
+
+    for i in 1:size(x, 1)
+        # Calculate midpoints, segment errors, and get all segment errors for the current variable
+        mid_point_below, mid_point_above, all_segment_errors = calculate_segmented_errs(x[i, :], errors, x_star[i], n_segments)
+
+        # Calculate the midpoints of each segment for plotting
+        min_val, max_val = minimum(x[i, :]), maximum(x[i, :])
+        bin_edges = range(min_val, stop = max_val, length = n_segments+1)
+        segment_midpoints = [(bin_edges[j] + bin_edges[j+1]) / 2 for j in 1:n_segments]
+        
+        # Calculate mean errors for each segment where possible
+        segment_mean_errors = Float32[isempty(segment) ? NaN : mean(segment) for segment in all_segment_errors]
+
+        # Create the individual plot for this variable
+        p = bar(segment_midpoints, segment_mean_errors, legend=false, title="Variable $i", xlabel="Segment Midpoint", ylabel="Mean Error", alpha=0.75)
+        
+        # Ensure x_star is included in the x-axis range
+        extended_min_val = min(min_val, x_star[i]) - 1
+        extended_max_val = max(max_val, x_star[i]) + 1
+        xlims!(p, extended_min_val, extended_max_val)
+        
+        # Highlighting the x_star with a vertical line
+        vline!(p, [x_star[i]], line=(:dash, 2), color=:red, label="x_star")
+
+        # Add annotation for x_star at the top of the plot
+        max_y_value = maximum(segment_mean_errors[.!isnan.(segment_mean_errors)]) * 1.05
+        annotate!(p, [(x_star[i], max_y_value, "x_star")])
+
+        # Marking mid_point_below and mid_point_above with scatter points
+        scatter!(p, [mid_point_below], [max_y_value], color=:green, label="mid_point_below")
+        scatter!(p, [mid_point_above], [max_y_value], color=:blue, label="mid_point_above")
+
+        # Store the plot in the array
+        push!(plots_array, p)
+    end
+
+    return plots_array
+
+end
+
+function generate_resample_config(sampling_config::Sampling_Config, x_star::Vector{Float64}, scale_factor::Float64, sample_size_method::Tuple{String, Float64},
+    strategy::String; x_above::Vector{Float64} = Vector{Float64}(), x_below::Vector{Float64} = Vector{Float64}())
+
+    
+    lb_prev = sampling_config.lb
+    ub_prev = sampling_config.ub
+    interval_prev = sampling_config.ub - sampling_config.lb
+    size_prev = sampling_config.n_samples
+    density_prev = interval_prev / sampling_config.n_samples
+
+    # strategy 1: fixed percentage of the search space
+    if strategy == "fixed_percentage"
+        sampling_config.lb = max.(x_star .- 0.5 * scale_factor * interval_prev, lb_prev)
+        sampling_config.ub = min.(x_star .+ 0.5 * scale_factor * interval_prev, ub_prev)
+    # strategy 2: error based resampling
+    elseif strategy == "error_based"
+        # x_above and x_below are provided for error_based strategy
+        if isempty(x_above) || isempty(x_below)
+            error("x_above and x_below must be provided for the error_based strategy.")
+        end
+        sampling_config.lb = max.(x_star .- scale_factor * abs.(x_star - x_below), lb_prev)
+        sampling_config.ub = min.(x_star .+ scale_factor * abs.(x_star - x_above), ub_prev)
+    # strategy 3: segmented error based
+    elseif strategy == "segmented_error"
+        # x_above and x_below are provided for segmented_error strategy
+        if isempty(x_above) || isempty(x_below)
+            error("x_above and x_below must be provided for the segmented_error strategy.")
+        end
+        sampling_config.lb = max.(x_star .- scale_factor * abs.(x_star - x_below), lb_prev)
+        sampling_config.ub = min.(x_star .+ scale_factor * abs.(x_star - x_above), ub_prev)     
+    else
+        error("Invalid resampling strategy specified.")
+    end
+
+    # determine the number of samples based on the specified method
+    if sample_size_method[1] == "fixed_percentage_density"
+        sampling_config.n_samples = round(Int, maximum((sampling_config.ub - sampling_config.lb) ./ (sample_size_method[2] * density_prev)))
+    elseif sample_size_method[1] == "fixed_percentage_size"
+        sampling_config.n_samples = round(Int, sample_size_method[2] * size_prev)
+    else
+        error("Invalid sample size method specified.")
+    end
+
+    return sampling_config
+end
+
+# plot the learning curve based on the loss history
 function plot_learning_curve(config::NN_Config, loss_hist::Vector)
     
     # initialize plot
