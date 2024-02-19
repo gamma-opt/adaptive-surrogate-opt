@@ -102,7 +102,7 @@ x_belows, x_aboves = find_max_ei(data_temp, model_init, x_star_init, 100)
 sampling_config_1st = generate_resample_config(sampling_config_init, x_star_init, 0.75, ("fixed_percentage_density", 1.0), "fixed_percentage")
 
 # read the new generated data based on the new sampling configuration
-csv_file_path = joinpath(root, "combined_data_1st_fp.csv")
+csv_file_path = joinpath(root, "combined_data_1st_mc.csv")
 data = DataFrame(CSV.File(csv_file_path, header=false))
 
 # Extract x (first 6 columns) and y (7th column)
