@@ -20,6 +20,8 @@ Random.seed!(1)
 styblinski_tang(x::Tuple) = 0.5 * sum([xi^4 - 16*xi^2 + 5*xi for xi in x])
 
 data_ST = generate_data(styblinski_tang, [fill(-4.0, 2), fill(-2.0, 2)], 1000, SobolSample(), 0.8)
+data_ST_scale, μ, σ = normalise_data(data_ST)   # normalise the data, as μ ≈ 0 and σ ≈ 1, the normalisation is not necessary
+
 config1_ST = NN_Config([2,512,256,1], [relu, relu, identity], false, 0.1, 0.1, Flux.Optimise.Optimiser(Adam(0.1, (0.9, 0.999)), ExpDecay(1.0)), 1, 800, 5000, 0)
 result_ST = NN_train(data_ST, config1_ST)
 NN_results(config1_ST, result_ST)
