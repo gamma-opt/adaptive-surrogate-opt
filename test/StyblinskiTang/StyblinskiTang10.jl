@@ -58,6 +58,10 @@ f_hat, f_true, x_star_init, gap = solution_evaluate(MILP_model, styblinski_tang)
 # generate new samples around x_star
 sampling_config_1st = generate_resample_config(sampling_config_init, x_star_init, 1.05, ("fixed_percentage_density", 1.0), "fixed_percentage")
 data_ST_1st = generate_data(styblinski_tang, sampling_config_1st, SobolSample(), 0.8)
+# generate new dataset with data_ST_1st and data_ST within the new defined sampling_config_1st lower and upper bounds
+
+new_data_ST = filter_(data_ST, Float32.(sampling_config_1st.lb), Float32.(sampling_config_1st.ub))
+data_ST_1st = combine_datasets(new_data_ST, data_ST_1st)
 
 # retrain the neural network model using the new samples, considering freezing the weights of the first few layers (c.freeze = 1)
 config1_ST = NN_Config([10,512,256,1], [relu, relu, identity], false, 0.1, 0.5, Flux.Optimise.Optimiser(Adam(0.01, (0.9, 0.999)), ExpDecay(0.1)), 1, round(Int, sampling_config_1st.n_samples*0.8), 1000, 1)
