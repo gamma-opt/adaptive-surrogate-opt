@@ -74,6 +74,45 @@ function generate_data(f::Function, sampling_config::Sampling_Config, sampling_m
     return data
 end
 
+# filters the data based on the provided lower and upper bounds
+function filter_data_within_bounds(data::NN_Data, lb_filter::Vector, ub_filter::Vector)
+    
+    # Function to check if all elements of x are within the specified bounds
+    function within_bounds(x, lb, ub)
+        all(lb .<= x .<= ub)
+    end
+    
+    # Filter x_train and y_train
+    train_indices = [within_bounds(data.x_train[:, i], lb_filter, ub_filter) for i in 1:size(data.x_train, 2)]
+    data.x_train = data.x_train[:, train_indices]
+    data.y_train = data.y_train[:, train_indices]
+
+    # Filter x_test and y_test
+    test_indices = [within_bounds(data.x_test[:, i], lb_filter, ub_filter) for i in 1:size(data.x_test, 2)]
+    data.x_test = data.x_test[:, test_indices]
+    data.y_test = data.y_test[:, test_indices]
+
+    return data
+end
+
+# combine two datasets of the NN_Data type
+function combine_datasets(data1::NN_Data, data2::NN_Data)::NN_Data
+    
+    # Create a new NN_Data instance to hold the combined data
+    combined_data = NN_Data()
+    
+    # Combine training data
+    combined_data.x_train = hcat(data1.x_train, data2.x_train)
+    combined_data.y_train = hcat(data1.y_train, data2.y_train)
+    
+    # Combine testing data
+    combined_data.x_test = hcat(data1.x_test, data2.x_test)
+    combined_data.y_test = hcat(data1.y_test, data2.y_test)
+    
+    return combined_data
+
+end
+
 # normalise the data
 function normalise_data(data::NN_Data) 
     
@@ -169,7 +208,10 @@ function NN_train(data::NN_Data, c::NN_Config; trained_model::Chain = Chain())
                     batch_err = loss(x, y)
                     push!(train_err_batch, batch_err)
                 end
-                push!(train_err_epoch, train_err_batch[end])                                 
+                push!(train_err_epoch, train_err_batch[end])  
+                if epoch % 100 == 0
+                    println("Epoch: $epoch")
+                end
             end
             push!(train_err_fold, train_err_epoch[end])           
         end 
@@ -189,7 +231,10 @@ function NN_train(data::NN_Data, c::NN_Config; trained_model::Chain = Chain())
                 batch_err = loss(x, y)
                 push!(train_err_batch, batch_err)
             end
-            push!(train_err_epoch, train_err_batch[end])                                  
+            push!(train_err_epoch, train_err_batch[end])
+            if epoch % 100 == 0
+                println("Epoch: $epoch")
+            end                                  
         end
         
         result.err_hist = train_err_epoch
