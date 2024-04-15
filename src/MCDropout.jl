@@ -1,35 +1,46 @@
 using KernelDensity
 using Statistics
-using Plots
+using Plots: plot, vline, hline
 using Distributions  # Required for Normal distribution functions
 
 # get the predictive distribution
-function predict_dist(data::NN_Data, model::Chain, n::Int)
+function predict_dist(data::NN_Data, model::Chain, pred_n::Int=100, top_n::Int=10)
 
-    num_samples = size(data.x_test, 2)
+    x = hcat(data.x_train, data.x_test)
+
+    num_samples = size(x, 2)
 
     trainmode!(model)
-    predictions = [model(data.x_test) for _ in 1:n]
-    predictions_per_sample = [zeros(n) for _ in 1:num_samples]
+    predictions = [model(x) for _ in 1:pred_n]
+    predictions_per_sample = [zeros(pred_n) for _ in 1:num_samples]
     
     for i in 1:num_samples
         predictions_per_sample[i] = vec(getindex.(predictions, i))
     end
 
-    return predictions_per_sample
+    means = mean(predictions)
+
+    # find the points with the highest variance
+    stds = std(predictions)
+    top_indices = sortperm(stds[1, :], rev=true)[1:top_n]
+    top_points = x[:, top_indices]
+
+    return predictions_per_sample, means, stds, top_points
     
 end
 
-# get a point estimate (use the mean for this)
+# # get a point estimate (use the mean for this)
 function predict_point(data::NN_Data, model::Chain, n::Int)
 
-    predictions = [model(data.x_test) for _ in 1:n]
+    x = hcat(data.x_train, data.x_test)
+
+    predictions = [model(x) for _ in 1:n]
     
     return mean(predictions), std(predictions)
     
 end
 
-# handle the outliner in the predictions using the  Interquartile Range (IQR)method
+# handle the outliner in the predictions using the Interquartile Range (IQR)method
 function remove_outliers_per_dist(predictions_per_sample::Vector)
 
     Q1 = quantile(predictions_per_sample, 0.25)
@@ -49,10 +60,8 @@ end
 function remove_outliers(data::NN_Data, predictions::Vector)
 
     num_samples = size(data.x_test, 2)
-
     filtered_predictions = [remove_outliers_per_dist(predictions[i]) for i in 1:num_samples]
     
-
     return filtered_predictions
     
 end
@@ -65,27 +74,33 @@ function kdeplot(filtered_predictions_per_sample::Vector, mean_prediction::Union
     xs = prediction_kde.x
     densities = prediction_kde.density
 
-    plot(xs, densities, fill=(0, .5, :blue), label="Kernel density estimation", linewidth = 1)
+    plot(xs, densities, fill=(0, 0.8, :cornflowerblue), label="Kernel density estimation", linewidth = 0)
 
-    vline!([mean_prediction], color=:red, linestyle=:dash, linewidth=1, label="Mean")
+    vline!([mean_prediction], color=:lightcoral, linestyle=:dash, linewidth=2, label="Mean")
 
 end
 
 # calculate the expected prediction errors
-function expected_prediction_error(data::NN_Data, model::Chain, n::Int)
+function expected_prediction_error(data::NN_Data, model::Chain, pred_n::Int=100, top_n::Int=10)
 
-    num_samples = size(data.x_test, 2)
+    x = hcat(data.x_train, data.x_test)
+    y = hcat(data.y_train, data.y_test)
 
-    predictions = predict_dist(data, model, n)
-    prediction_errs = [zeros(n) for _ in 1:num_samples]
+    num_samples = size(x, 2)
+
+    predictions, _, _, _ = predict_dist(data, model, pred_n)
+    prediction_errs = [zeros(pred_n) for _ in 1:num_samples]
 
     for i in 1:num_samples
-        prediction_errs[i] = abs.(predictions[i] .- data.y_test[i])
+        prediction_errs[i] = (abs.(predictions[i] .- y[i])).^2
     end
 
-    # expected_prediction_error = mean(prediction_errs)
+    # find the point with the highest ee
+    means = mean.(prediction_errs)
+    top_indices = sortperm(means, rev=true)[1:top_n]
+    top_points = x[:, top_indices]
 
-    return mean.(prediction_errs)
+    return means, top_points
     
 end
 
@@ -136,33 +151,41 @@ end
 - xi: Exploration-exploitation trade-off parameter (default is 0.01).
 """
 
-function calculate_ei(μ_x::Union{Float32, Float64}, σ_x::Union{Float32, Float64}, f_x_star::Union{Float32, Float64}, xi::Float64=0.01) :: Float64
+function calculate_ei(μ_x::Union{Float32, Float64}, σ_x::Union{Float32, Float64}, f_x_star::Union{Float32, Float64}, is_minimisation::Bool=true, xi::Float64=0.01) :: Float64
+    
     if σ_x > 0.0
-        Z = (μ_x - f_x_star - xi) / σ_x
-        return (μ_x - f_x_star - xi) * cdf(Normal(0, 1), Z) + σ_x * pdf(Normal(0, 1), Z)
+        # For minimisation, we want the EI to be high for predictions below f_x_star
+        # For maximisation, we want the EI to be high for predictions above f_x_star
+        improvement = is_minimisation ? (f_x_star - μ_x - xi) : (μ_x - f_x_star - xi)
+        Z = improvement / σ_x
+        return (f_x_star - μ_x - xi) * cdf(Normal(0, 1), Z) + σ_x * pdf(Normal(0, 1), Z)
     else
         return 0.0  # If σ_x is 0, the improvement is considered to be 0 as there is no uncertainty.
     end
+
 end
 
 # calculate the expected improvement
-function expected_improvement(data::NN_Data, model::Chain, x_star::Vector{Float64}, n::Int)
+function expected_improvement(data::NN_Data, model::Chain, x_star::Vector{Float64}, pred_n::Int=100, top_n::Int=10, is_minimisation::Bool=true, xi::Float64=0.01)
  
-    num_samples = size(data.x_test, 2)
+    x = hcat(data.x_train, data.x_test)
 
-    predictions = predict_dist(data, model, n)
-    μ_x, σ_x = predict_point(data, model, n)
+    num_samples = size(x, 2)
+
+    μ_x, σ_x = predict_point(data, model, pred_n)
     f_x_star = model(x_star)[1]
 
     expected_improvements = Float64[]
 
     for i in 1:num_samples
-        push!(expected_improvements, calculate_ei(μ_x[i], σ_x[i], f_x_star, 0.01))
+        push!(expected_improvements, calculate_ei(μ_x[i], σ_x[i], f_x_star, is_minimisation, xi))
     end
 
     # expected_prediction_error = mean(prediction_errs)
+    indices = sortperm(expected_improvements, rev=true)[1:top_n]
+    top_points = x[:, indices]
 
-    return expected_improvements
+    return expected_improvements, top_points
     
 end
 
@@ -205,5 +228,37 @@ function find_max_ei(data::NN_Data, model::Chain, x_star::Vector{Float64}, n::In
     return x_belows, x_aboves
 end
 
+function generate_resample_configs_mc(sampling_config::Sampling_Config, x_top_var::Matrix, scalar_radius::Float64, scalar_n_samples::Float64, mean::Matrix, std::Matrix)
+    
+    # Determine the number of parameters (dimensions) and points
+    num_parameters, num_points = size(x_top_var)
+    
+    # Calculate the adjusted number of samples for each new config
+    adjusted_n_samples = Int(ceil(sampling_config.n_samples * scalar_n_samples / num_points))
+    
+    # Initialise a vector to hold all the new sampling configurations
+    new_configs_norm = Vector{Sampling_Config}(undef, num_points)
+    new_configs = Vector{Sampling_Config}(undef, num_points)
+    
+    # Loop through each high variance point to create new sampling configs
+    for i in 1:num_points
+        new_lb = Vector{Float64}(undef, num_parameters)
+        new_ub = Vector{Float64}(undef, num_parameters)
+        
+        # Calculate new bounds by scaling the original bounds around the center points
+        for j in 1:num_parameters
+            center = x_top_var[j, i]
+            radius = (sampling_config.ub[j] - sampling_config.lb[j]) * scalar_radius / 2
+            new_lb[j] = max(sampling_config.lb[j], center - radius)
+            new_ub[j] = min(sampling_config.ub[j], center + radius)
+        end
+        
+        # Create a new Sampling_Config for the current high variance point
+        new_configs_norm[i] = Sampling_Config(adjusted_n_samples, new_lb, new_ub)
+        new_configs[i] = Sampling_Config(adjusted_n_samples, new_lb .* vec(std) .+ vec(mean), new_ub .* vec(std) .+ vec(mean))
+    end
+    
+    return new_configs_norm, new_configs
+end
 
 
