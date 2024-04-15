@@ -1,6 +1,7 @@
 # module NNSurrogate
 
 using Plots
+using GLMakie
 using Statistics
 using Surrogates
 using Flux
@@ -74,6 +75,61 @@ function generate_data(f::Function, sampling_config::Sampling_Config, sampling_m
     return data
 end
 
+function generate_and_combine_data(f::Function, configs::Vector{Sampling_Config}, sampling_method::Any, splits::Float64)
+    
+    combined_x_train, combined_y_train, combined_x_test, combined_y_test = [], [], [], []
+
+    # initialise the data
+    data = NN_Data()
+
+    n = 0
+    for (index, config) in enumerate(configs)
+        data = generate_data(f, config, sampling_method, splits)
+        println("Data generated for config: #", index)
+        push!(combined_x_train, data.x_train)
+        push!(combined_y_train, data.y_train)
+        push!(combined_x_test, data.x_test)
+        push!(combined_y_test, data.y_test)
+    end
+
+    # Concatenate the collected data
+    data.x_train = hcat(combined_x_train...)
+    data.y_train = hcat(combined_y_train...)
+    data.x_test = hcat(combined_x_test...)
+    data.y_test = hcat(combined_y_test...)
+
+    # Return a tuple or a dictionary if you prefer
+    return data
+end
+
+
+function generate_data_from_file(file_path::String, splits::Float64, num_features::Int, num_outputs::Int)
+    
+    # get the location of the script file
+    root = dirname(@__FILE__)
+
+    # a robust representation of the filepath to data file
+    csv_file_path = joinpath(root, file_path)
+
+    # read the data from the csv file
+    rdata = DataFrame(CSV.File(csv_file_path, header=false))
+
+    # Extract x (first 5 columns) and y (6th column)
+    x = Matrix(rdata[:, 1:num_features])'
+    y = reshape(rdata[:, num_features + num_outputs], :, num_outputs)'
+
+    # split the data into train set and test set
+    train_data, test_data = Flux.splitobs((x, y), at = 0.8)
+
+    # convert the data to the format of NN_Data
+    data_flame = NN_Data()
+    data_flame.x_train = Float32.(train_data[1])
+    data_flame.y_train = Float32.(train_data[2])
+    data_flame.x_test = Float32.(test_data[1])
+    data_flame.y_test = Float32.(test_data[2])
+
+end
+
 # filters the data based on the provided lower and upper bounds
 function filter_data_within_bounds(data::NN_Data, lb_filter::Vector, ub_filter::Vector)
     
@@ -96,39 +152,49 @@ function filter_data_within_bounds(data::NN_Data, lb_filter::Vector, ub_filter::
 end
 
 # combine two datasets of the NN_Data type
-function combine_datasets(data1::NN_Data, data2::NN_Data)::NN_Data
+function combine_datasets(data1::NN_Data, data2::NN_Data; splits::Float64=0.8)::NN_Data
     
     # Create a new NN_Data instance to hold the combined data
-    combined_data = NN_Data()
+    data = NN_Data()
     
-    # Combine training data
-    combined_data.x_train = hcat(data1.x_train, data2.x_train)
-    combined_data.y_train = hcat(data1.y_train, data2.y_train)
-    
-    # Combine testing data
-    combined_data.x_test = hcat(data1.x_test, data2.x_test)
-    combined_data.y_test = hcat(data1.y_test, data2.y_test)
-    
-    return combined_data
+    # Combine both training and testing data from both datasets
+    x = hcat(data1.x_train, data2.x_train, data1.x_test, data2.x_test)
+    y = hcat(data1.y_train, data2.y_train, data1.y_test, data2.y_test)
+
+    # split the data into train set and test set
+    cv_data, test_data = Flux.splitobs((x, y), at = splits)
+
+    # assign the data to the struct
+    data.x_train = Float32.(cv_data[1])
+    data.y_train = Float32.(cv_data[2])
+    data.x_test = Float32.(test_data[1])
+    data.y_test = Float32.(test_data[2])
+
+    return data
 
 end
 
 # normalise the data
 function normalise_data(data::NN_Data) 
     
+    data_norm = NN_Data()
     μ, σ = mean(data.x_train, dims=2), std(data.x_train, dims=2)  # compute the mean and standard deviation of the training set
-    data.x_train = Flux.normalise(data.x_train)  # normalise the training set
-    data.x_test = (data.x_test .- μ) ./ σ  # normalise the test set using the mean and standard deviation of the training set
+    data_norm.x_train = Flux.normalise(data.x_train)  # normalise the training set
+    data_norm.x_test = (data.x_test .- μ) ./ σ  # normalise the test set using the mean and standard deviation of the training set
     
-    return data, μ, σ
+    data_norm.y_train = data.y_train
+    data_norm.y_test = data.y_test
+
+    return data_norm, μ, σ
 end
 
 # define the loss function with L2 regularization
+# pure mse if lambda = 0
 function loss_l2(x, y, model, lambda)
     
     mse_loss = Flux.mse(model(x), y) # mean squared error
     l2_loss = sum(p -> sum(abs2, p), params(model)) # L2 regularization term
-     
+    
     return mse_loss + 0.5 * lambda / length(y) * l2_loss
 end
 
@@ -210,14 +276,15 @@ function NN_train(data::NN_Data, c::NN_Config; trained_model::Chain = Chain())
                 end
                 push!(train_err_epoch, train_err_batch[end])  
                 if epoch % 100 == 0
-                    println("Epoch: $epoch")
+                    println("Epoch: $epoch, Fold: $(length(train_err_fold)+1)")
                 end
             end
             push!(train_err_fold, train_err_epoch[end])           
         end 
            
         result.err_hist = vec(mean(reshape(train_err_epoch, c.k, c.epochs), dims = 1))
-        result.train_err = [mean(train_err_fold), loss_rrmse(data.x_train, data.y_train, result.model), loss_mape(data.x_train, data.y_train, result.model)]
+        # result.train_err = [mean(train_err_fold), loss_rrmse(data.x_train, data.y_train, result.model), loss_mape(data.x_train, data.y_train, result.model)]
+        result.train_err = [Flux.mse(result.model(data.x_train), data.y_train), loss_rrmse(data.x_train, data.y_train, result.model), loss_mape(data.x_train, data.y_train, result.model)]
         
         # switch to test mode
         testmode!(result.model)  
@@ -238,8 +305,9 @@ function NN_train(data::NN_Data, c::NN_Config; trained_model::Chain = Chain())
         end
         
         result.err_hist = train_err_epoch
-        result.train_err = [train_err_epoch[end], loss_rrmse(data.x_train, data.y_train, result.model), mean(abs.((result.model(data.x_train) .- data.y_train) ./ data.y_train)) ]
-
+        # result.train_err = [train_err_epoch[end], loss_rrmse(data.x_train, data.y_train, result.model), mean(abs.((result.model(data.x_train) .- data.y_train) ./ data.y_train)) ]
+        result.train_err = [Flux.mse(result.model(data.x_train), data.y_train), loss_rrmse(data.x_train, data.y_train, result.model), mean(abs.((result.model(data.x_train) .- data.y_train) ./ data.y_train))]
+        
         # switch to test mode
         testmode!(result.model)
         result.test_err = [Flux.mse(result.model(data.x_test), data.y_test), loss_rrmse(data.x_test, data.y_test, result.model), loss_mape(data.x_test, data.y_test, result.model)]
@@ -278,7 +346,7 @@ function NN_compare(data::NN_Data, configs::Vector{NN_Config}; trained_model::Ch
     return results_cp
 end
 
-
+# find the point with the maximum error below and above x_star
 function find_max_errs(data::NN_Data, model::Chain, x_star::Vector{Float64})
     
     # Concatenate training and testing data
@@ -485,6 +553,9 @@ function generate_resample_config(sampling_config::Sampling_Config, x_star::Vect
     return sampling_config
 end
 
+
+# visualisation
+
 # plot the learning curve based on the loss history
 function plot_learning_curve(config::NN_Config, loss_hist::Vector)
     
@@ -500,6 +571,99 @@ function plot_learning_curve(config::NN_Config, loss_hist::Vector)
         color = :blue,
         linewidth = 2
     )
+end
+
+# visualise the surrogate model using tricontour plot, marking other points worth mentioning
+function plot_contour(data::NN_Data, model::Chain, x_star::Vector{Float64}, scattered_point_label::String, scattered_point, selected_dim::Vector{Int})
+    
+    # extract the selected dimensions
+    x = hcat(data.x_train, data.x_test)
+    x1 = collect(x[selected_dim[1], :])
+    x2 = collect(x[selected_dim[2], :])
+
+    # extract the output
+    y_true = collect(vec(hcat(data.y_train, data.y_test)))
+    y_pred = collect(vec(model(x)))
+
+    # plot the tricontour of the true output and the surrogate output
+    fig = Figure(size = (800, 400))
+
+    ax1 = Axis(fig[1, 1], xlabel = "x_$(selected_dim[1])", ylabel = "x_$(selected_dim[2])", title = "Simulator")
+    ax2 = Axis(fig[1, 3], xlabel = "x_$(selected_dim[1])", ylabel = "x_$(selected_dim[2])", title = "Surrogate")
+    
+    # plot the tricontour of the true output
+    tr_true = tricontourf!(ax1, x1, x2, y_true, triangulation = Makie.DelaunayTriangulation(), color = :viridis)
+    # Makie.scatter!(ax1, x_star[selected_dim[1]], x_star[selected_dim[2]], color = y_true)
+    sca = Makie.scatter!(ax1, x_star[selected_dim[1]], x_star[selected_dim[2]], color = :green)
+    # text!(ax1, x_star[selected_dim[1]], x_star[selected_dim[2]], text = "x_star", align = (:center, :top))
+    
+    # plot the tricontour of the surrogate output
+    tr_pred = tricontourf!(ax2, x1, x2, y_pred, triangulation = Makie.DelaunayTriangulation(), color = :viridis)
+    sca = Makie.scatter!(ax2, x_star[selected_dim[1]], x_star[selected_dim[2]], color = :green)
+    
+    # plot the scattered points
+    sca2 = Makie.scatter!(NaN, NaN)
+    start_index = scattered_point_label == "sol_pool" ? 2 : 1
+    for val in scattered_point[start_index:end]
+        sca2 = Makie.scatter!(ax1, val[selected_dim[1]], val[selected_dim[2]], color = :orange)
+        sca2 = Makie.scatter!(ax2, val[selected_dim[1]], val[selected_dim[2]], color = :orange)
+    end
+    
+    Legend(fig[2, :], [sca, sca2], ["x_star", scattered_point_label], orientation = :horizontal)
+
+    # determine the color limits for the plots
+    min_val = minimum([y_true; y_pred])
+    max_val = maximum([y_true; y_pred])
+    color_limits = (min_val, max_val)
+    
+    # Set the color limits for the tricontour plots
+    tr_true.climits = color_limits
+    tr_pred.climits = color_limits
+    
+    Colorbar(fig[1, 2], tr_true)
+    Colorbar(fig[1, 4], tr_pred)
+
+    fig
+
+end
+
+
+# visualise the scattered data points using tricontour plot
+function plot_contour_pure(data::NN_Data, model::Chain, x_star::Vector{Float64}, label::String, results::Vector, scattered_point_label::String, scattered_point, selected_dim::Vector{Int})
+    
+    # extract the selected dimensions
+    x = hcat(data.x_train, data.x_test)
+    x1 = collect(x[selected_dim[1], :])
+    x2 = collect(x[selected_dim[2], :])
+
+    # extract the output
+    y = results
+    
+    # plot the tricontour of the true output and the surrogate output
+    fig = Figure(size = (400, 420))
+    ax1 = Axis(fig[1, 1], xlabel = "x_$(selected_dim[1])", ylabel = "x_$(selected_dim[2])", title = label)
+    sca1 = Makie.scatter!(ax1, x_star[selected_dim[1]], x_star[selected_dim[2]], color = :green)
+    # plot the tricontour of the true output
+    tr = tricontourf!(ax1, x1, x2, y, triangulation = Makie.DelaunayTriangulation(), color = :viridis)
+    
+    # plot the scattered points
+    sca2 = Makie.scatter!(NaN, NaN)
+    for val in scattered_point[1:end]
+        sca2 = Makie.scatter!(ax1, val[selected_dim[1]], val[selected_dim[2]], color = :orange)
+    end
+    # # determine the color limits for the plots
+    # min_val = minimum([y])
+    # max_val = maximum([y])
+    # color_limits = (min_val, max_val)
+    
+    # # Set the color limits for the tricontour plots
+    # tr.climits = color_limits
+    
+    Colorbar(fig[1, 2], tr)
+    Legend(fig[2, :], [sca1, sca2], ["x_star", scattered_point_label], orientation = :horizontal)
+
+    fig
+
 end
 
 # end # module
