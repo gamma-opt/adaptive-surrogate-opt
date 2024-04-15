@@ -10,22 +10,24 @@ function gap_abs(f_hat::Float64, f::Float64)
     return abs(f_hat - f)/abs(f)
 end
 
-function solution_evaluate(MILP_model::Model, func::Function)
+function solution_evaluate(MILP_model::Model, func::Function; mean = 0, std = 1)
     
     f_hat = objective_value(MILP_model)
-    x_hat = [value.(MILP_model[:x][0,i]) for i in 1:length(MILP_model[:x][0,:])]
+    x_hat_norm = [value.(MILP_model[:x][0,i]) for i in 1:length(MILP_model[:x][0,:])]
+    x_hat = [value.(MILP_model[:x][0,i]) for i in 1:length(MILP_model[:x][0,:])] .* std .+ mean
     f_true = func(Tuple(x_hat))
     gap = gap_abs(f_hat, f_true)
     
-    # println("MIP solution:         ", x_hat)
-    # println("Objective value:      ", f_hat)
-    # println("True objective value: ", f)
-    # println("Gap:                  ", gap)
+    println("        MIP solution: ", x_hat)
+    println("     Objective value: ", f_hat)
+    println("True objective value: ", f_true)
+    println("                 Gap: ", gap)
 
-    if gap > 1e-3
+    if gap > 1e-2
         println("Warning: the MIP solution is not accurate enough!")
     end
-    return f_hat, f_true, x_hat, gap
+
+    return f_hat, f_true, vec(x_hat), x_hat_norm, gap
 
 end
 
