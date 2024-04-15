@@ -219,7 +219,6 @@ function rebuild_JuMP_Model(retrained_model::Chain, MILP_model::Model, freeze::I
 end
 
 # set start values of the variables corresponding to the input layers using the solution of the previous MILP model
-
 function warmstart_JuMP_Model(MILP_model::Model, x_star::Vector{Float64})
 
     for i in 1:length(x_star)
@@ -227,5 +226,23 @@ function warmstart_JuMP_Model(MILP_model::Model, x_star::Vector{Float64})
     end
 
     return MILP_model
+
+end
+
+# store multiple solutions in the solution pool
+function sol_pool(MILP_model::Model, num_solutions::Int; mean = 0, std = 1)
+
+    solution_pool_x = []
+    solution_pool_f = []
+
+    for i in 1:num_solutions
+        println("Solution $i:")
+        println("   x = ", value.(MILP_model[:x][0,i] for i in 1:length(MILP_model[:x][0,:]); result = i) .* std .+ mean)
+        push!(solution_pool_x, value.(MILP_model[:x][0,i] for i in 1:length(MILP_model[:x][0,:]); result = i))  # store the normalised solution
+        println(" obj = ", objective_value(MILP_model; result = i))
+        push!(solution_pool_f, objective_value(MILP_model; result = i))
+    end
+
+    return solution_pool_x, solution_pool_f
 
 end
