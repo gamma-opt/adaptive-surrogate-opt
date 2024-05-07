@@ -237,7 +237,7 @@ function sol_pool(MILP_model::Model, num_solutions::Int; mean = 0, std = 1)
 
     for i in 1:num_solutions
         println("Solution $i:")
-        println("   x = ", value.(MILP_model[:x][0,i] for i in 1:length(MILP_model[:x][0,:]); result = i) .* std .+ mean)
+        println("   x = ", value.(MILP_model[:x][0,i] for i in 1:length(MILP_model[:x][0,:]); result = i) .* std .+ mean)  # print the unnormalised solution
         push!(solution_pool_x, value.(MILP_model[:x][0,i] for i in 1:length(MILP_model[:x][0,:]); result = i))  # store the normalised solution
         println(" obj = ", objective_value(MILP_model; result = i))
         push!(solution_pool_f, objective_value(MILP_model; result = i))
