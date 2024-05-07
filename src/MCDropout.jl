@@ -20,12 +20,12 @@ function predict_dist(data::NN_Data, model::Chain, pred_n::Int=100, top_n::Int=1
 
     means = mean(predictions)
 
-    # find the points with the highest variance
+    # find the points with the highest std
     stds = std(predictions)
     top_indices = sortperm(stds[1, :], rev=true)[1:top_n]
     top_points = x[:, top_indices]
 
-    return predictions_per_sample, means, stds, top_points
+    return predictions, predictions_per_sample, means, stds, top_points
     
 end
 
@@ -40,7 +40,7 @@ function predict_point(data::NN_Data, model::Chain, n::Int)
     
 end
 
-# handle the outliner in the predictions using the Interquartile Range (IQR)method
+# handle the outliner in the predictions using the Interquartile Range (IQR) method
 function remove_outliers_per_dist(predictions_per_sample::Vector)
 
     Q1 = quantile(predictions_per_sample, 0.25)
@@ -59,10 +59,43 @@ end
 
 function remove_outliers(data::NN_Data, predictions::Vector)
 
-    num_samples = size(data.x_test, 2)
+    x = hcat(data.x_train, data.x_test)
+    num_samples = size(x, 2)
+
     filtered_predictions = [remove_outliers_per_dist(predictions[i]) for i in 1:num_samples]
     
     return filtered_predictions
+    
+end
+
+# get the filtered predictive distribution 
+function predict_dist_filtered(data::NN_Data, model::Chain, pred_n::Int=100, top_n::Int=10)
+
+    x = hcat(data.x_train, data.x_test)
+
+    num_samples = size(x, 2)
+
+    trainmode!(model)
+    predictions = [model(x) for _ in 1:pred_n]
+    predictions_per_sample = [zeros(pred_n) for _ in 1:num_samples]
+    
+    for i in 1:num_samples
+        predictions_per_sample[i] = vec(getindex.(predictions, i))
+    end
+  
+    filtered_predictions = [remove_outliers_per_dist(predictions_per_sample[i]) for i in 1:num_samples]
+    
+    for i in 1:num_samples
+        means[i] = mean(filtered_predictions[i])
+        stds[i] = std(filtered_predictions[i])
+    end
+
+    # find the points with the highest std
+
+    top_indices = sortperm(stds[1, :], rev=true)[1:top_n]
+    top_points = x[:, top_indices]
+
+    return filtered_predictions, means, stds, top_points
     
 end
 
@@ -237,7 +270,7 @@ function generate_resample_configs_mc(sampling_config::Sampling_Config, x_top_va
     adjusted_n_samples = Int(ceil(sampling_config.n_samples * scalar_n_samples / num_points))
     
     # Initialise a vector to hold all the new sampling configurations
-    new_configs_norm = Vector{Sampling_Config}(undef, num_points)
+    # new_configs_norm = Vector{Sampling_Config}(undef, num_points)
     new_configs = Vector{Sampling_Config}(undef, num_points)
     
     # Loop through each high variance point to create new sampling configs
@@ -254,11 +287,21 @@ function generate_resample_configs_mc(sampling_config::Sampling_Config, x_top_va
         end
         
         # Create a new Sampling_Config for the current high variance point
-        new_configs_norm[i] = Sampling_Config(adjusted_n_samples, new_lb, new_ub)
-        new_configs[i] = Sampling_Config(adjusted_n_samples, new_lb .* vec(std) .+ vec(mean), new_ub .* vec(std) .+ vec(mean))
+        # new_configs_norm[i] = Sampling_Config(adjusted_n_samples, new_lb, new_ub)
+        new_configs[i] = Sampling_Config(adjusted_n_samples, new_lb .* vec(std) .+ vec(mean), new_ub .* vec(std) .+ vec(mean))     
     end
-    
-    return new_configs_norm, new_configs
-end
 
+    # find the extreme config
+    min_lb = copy(new_configs[1].lb)
+    max_ub = copy(new_configs[1].ub)
+    for config in new_configs
+        # Element-wise comparison to find the minimum and maximum
+        min_lb = min.(min_lb, config.lb)
+        max_ub = max.(max_ub, config.ub)
+    end
+    n_samples = sum([config.n_samples for config in new_configs])
+    new_config = Sampling_Config(n_samples, min_lb, max_ub)
+
+    return new_configs, new_config
+end
 
