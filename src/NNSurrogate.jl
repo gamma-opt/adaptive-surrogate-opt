@@ -102,8 +102,7 @@ function generate_and_combine_data(f::Function, configs::Vector{Sampling_Config}
     return data
 end
 
-
-function generate_data_from_file(file_path::String, splits::Float64, num_features::Int, num_outputs::Int)
+function load_data(file_path::String, splits::Float64, num_features::Int, num_outputs::Int)
     
     # get the location of the script file
     root = dirname(@__FILE__)
@@ -119,7 +118,7 @@ function generate_data_from_file(file_path::String, splits::Float64, num_feature
     y = reshape(rdata[:, num_features + num_outputs], :, num_outputs)'
 
     # split the data into train set and test set
-    train_data, test_data = Flux.splitobs((x, y), at = 0.8)
+    train_data, test_data = Flux.splitobs((x, y), at = splits)
 
     # convert the data to the format of NN_Data
     data_flame = NN_Data()
@@ -127,6 +126,8 @@ function generate_data_from_file(file_path::String, splits::Float64, num_feature
     data_flame.y_train = Float32.(train_data[2])
     data_flame.x_test = Float32.(test_data[1])
     data_flame.y_test = Float32.(test_data[2])
+
+    return data_flame
 
 end
 
@@ -574,7 +575,7 @@ function plot_learning_curve(config::NN_Config, loss_hist::Vector)
 end
 
 # visualise the surrogate model using tricontour plot, marking other points worth mentioning
-function plot_contour(data::NN_Data, model::Chain, x_star::Vector{Float64}, scattered_point_label::String, scattered_point, selected_dim::Vector{Int})
+function plot_dual_contours(data::NN_Data, model::Chain, x_star::Vector{Float64}, scattered_point_label::String, scattered_point, selected_dim::Vector{Int})
     
     # extract the selected dimensions
     x = hcat(data.x_train, data.x_test)
@@ -604,13 +605,18 @@ function plot_contour(data::NN_Data, model::Chain, x_star::Vector{Float64}, scat
     # plot the scattered points
     sca2 = Makie.scatter!(NaN, NaN)
     start_index = scattered_point_label == "sol_pool" ? 2 : 1
-    for val in scattered_point[start_index:end]
-        sca2 = Makie.scatter!(ax1, val[selected_dim[1]], val[selected_dim[2]], color = :orange)
-        sca2 = Makie.scatter!(ax2, val[selected_dim[1]], val[selected_dim[2]], color = :orange)
+    # in case Solution count = 1
+    if scattered_point_label == "sol_pool" && size(scattered_point, 1) == 1
+        Legend(fig[2, :], [sca], ["x_star"], orientation = :horizontal)
+    else
+        for val in scattered_point[start_index:end]
+            sca2 = Makie.scatter!(ax1, val[selected_dim[1]], val[selected_dim[2]], color = :orange)
+            sca2 = Makie.scatter!(ax2, val[selected_dim[1]], val[selected_dim[2]], color = :orange)
+        end
+        Legend(fig[2, :], [sca, sca2], ["x_star", scattered_point_label], orientation = :horizontal)
+
     end
     
-    Legend(fig[2, :], [sca, sca2], ["x_star", scattered_point_label], orientation = :horizontal)
-
     # determine the color limits for the plots
     min_val = minimum([y_true; y_pred])
     max_val = maximum([y_true; y_pred])
@@ -629,7 +635,7 @@ end
 
 
 # visualise the scattered data points using tricontour plot
-function plot_contour_pure(data::NN_Data, model::Chain, x_star::Vector{Float64}, label::String, results::Vector, scattered_point_label::String, scattered_point, selected_dim::Vector{Int})
+function plot_single_contour(data::NN_Data, model::Chain, x_star::Vector{Float64}, label::String, results::Vector, scattered_point_label::String, scattered_point, selected_dim::Vector{Int})
     
     # extract the selected dimensions
     x = hcat(data.x_train, data.x_test)
