@@ -18,7 +18,7 @@ function solution_evaluate(MILP_model::Model, func::Function; mean = 0, std = 1)
     f_true = func(Tuple(x_hat))
     gap = gap_abs(f_hat, f_true)
     
-    println("        MIP solution: ", x_hat)
+    println("        MIP solution: ", vec(x_hat))
     println("     Objective value: ", f_hat)
     println("True objective value: ", f_true)
     println("                 Gap: ", gap)
