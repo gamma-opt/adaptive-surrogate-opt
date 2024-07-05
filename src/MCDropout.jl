@@ -7,37 +7,56 @@ using Distributions  # Required for Normal distribution functions
 function predict_dist(data::NN_Data, model::Chain, pred_n::Int=100, top_n::Int=10)
 
     x = hcat(data.x_train, data.x_test)
-
     num_samples = size(x, 2)
+    output_dim = size(model(x[:, 1]), 1)
 
     trainmode!(model)
     predictions = [model(x) for _ in 1:pred_n]
-    predictions_per_sample = [zeros(pred_n) for _ in 1:num_samples]
+    predictions_per_sample = [zeros(Float64, pred_n, output_dim) for _ in 1:num_samples]
     
+    # populate the predictions per sample
     for i in 1:num_samples
-        predictions_per_sample[i] = vec(getindex.(predictions, i))
+        for j in 1:pred_n
+            predictions_per_sample[i][j, :] = predictions[j][:, i]
+        end
     end
 
+    # calculate mean and standard deviation for each dimension
     means = mean(predictions)
-
-    # find the points with the highest std
     stds = std(predictions)
-    top_indices = sortperm(stds[1, :], rev=true)[1:top_n]
+
+    # find indices of the points with the highest overall standard deviation
+    overall_stds = mean(stds, dims=1)
+    top_indices = sortperm(vec(overall_stds), rev=true)[1:top_n]
     top_points = x[:, top_indices]
 
     return predictions, predictions_per_sample, means, stds, top_points
     
 end
 
-# # get a point estimate (use the mean for this)
-function predict_point(data::NN_Data, model::Chain, n::Int)
-
+# get a point estimate (use the mean for this)
+function predict_point(data::NN_Data, model::Chain, n::Int, selected_y_dim::Int=1)
+    
     x = hcat(data.x_train, data.x_test)
+    num_samples = size(x, 2)
 
-    predictions = [model(x) for _ in 1:n]
-    
-    return mean(predictions), std(predictions)
-    
+    predictions = Array{Float64, 2}(undef, n, num_samples)
+
+    # populate the predictions array for the selected dimension
+    for i in 1:n
+        prediction = model(x)
+        predictions[i, :] = prediction[selected_y_dim, :]  # extract only the selected dimension
+    end
+
+    # Calculate mean and std along the predictions dimension
+    means = mean(predictions, dims=1)
+    stds = std(predictions, dims=1)
+
+    # Reshape means and stds to be 1D vectors
+    means = vec(means)
+    stds = vec(stds)
+
+    return means, stds
 end
 
 # handle the outliner in the predictions using the Interquartile Range (IQR) method
@@ -57,16 +76,16 @@ function remove_outliers_per_dist(predictions_per_sample::Vector)
     
 end
 
-function remove_outliers(data::NN_Data, predictions::Vector)
+# function remove_outliers(data::NN_Data, predictions::Vector, selected_y_dim::Int=1) 
 
-    x = hcat(data.x_train, data.x_test)
-    num_samples = size(x, 2)
+#     x = hcat(data.x_train, data.x_test)
+#     num_samples = size(x, 2)
 
-    filtered_predictions = [remove_outliers_per_dist(predictions[i]) for i in 1:num_samples]
+#     filtered_predictions = [remove_outliers_per_dist(predictions[i]) for i in 1:num_samples]
+
+#     return filtered_predictions
     
-    return filtered_predictions
-    
-end
+# end
 
 # get the filtered predictive distribution 
 function predict_dist_filtered(data::NN_Data, model::Chain, pred_n::Int=100, top_n::Int=10)
@@ -102,6 +121,7 @@ end
 # plot the predictive distribution
 function kdeplot(filtered_predictions_per_sample::Vector, mean_prediction::Union{Float32, Float64})
 
+    # default kernal is Normal
     prediction_kde = kde(filtered_predictions_per_sample) 
 
     xs = prediction_kde.x
