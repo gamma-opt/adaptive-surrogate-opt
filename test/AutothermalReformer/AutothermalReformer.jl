@@ -209,7 +209,7 @@ sampling_config_1st_filtered_norm = Sampling_Config(
     (sampling_config_1st.ub .- vec(mean_1st_filtered)) ./ vec(std_1st_filtered)
 )
 
-config_reformer_1st = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 120, 100, 2)
+config_reformer_1st = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 223, 100, 1)
 train_time_1st = @elapsed result_reformer_1st = NN_train(data_reformer_1st_filtered_norm, config_reformer_1st, trained_model = model_init)
 NN_results(config_reformer_1st, result_reformer_1st)
 
@@ -264,7 +264,7 @@ sampling_config_1st_norm = Sampling_Config(
     (sampling_config_1st.ub .- vec(mean_1st)) ./ vec(std_1st)
 )
 
-config_reformer_1st = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 858, 100, 2)
+config_reformer_1st = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 858, 100, 1)
 train_time = @elapsed result_reformer_1st_whole = NN_train(data_reformer_1st_norm, config_reformer_1st, trained_model = model_init)
 NN_results(config_reformer_1st, result_reformer_1st_whole)
 
@@ -311,7 +311,7 @@ Makie.save(joinpath(root, "images/Comparison of Simulator and Surrogate Model Co
 
 #------------------------------ 2nd iteration --------------------------#
 # Resample densely around the points with the highest uncertainty
-sampling_configs_2nd, sampling_config_2nd = generate_resample_configs_mc(sampling_config_1st_norm, [x_top_std x_star_1st_norm], 0.10, 0.3, mean_1st, std_1st)
+sampling_configs_2nd, sampling_config_2nd = generate_resample_configs_mc(sampling_config_1st_filtered_norm, [x_top_std x_star_1st_norm], 0.10, 0.3, mean_1st_filtered, std_1st_filtered)
 _, _, selected_indices_2nd =  extract_data_from_given_dataset(x_not_selected, y_not_selected, sampling_configs_2nd, complement_indices)
 
 x_2nd_added = x[:, selected_indices_2nd]
@@ -340,7 +340,7 @@ sampling_config_2nd_filtered_norm = Sampling_Config(
     (sampling_config_2nd.ub .- vec(mean_2nd_filtered)) ./ vec(std_2nd_filtered)
 )
 
-config_reformer_2nd = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 120, 100, 2)
+config_reformer_2nd = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 197, 100, 1)
 train_time_2nd = @elapsed result_reformer_2nd = NN_train(data_reformer_2nd_filtered_norm, config_reformer_2nd, trained_model = model_1st)
 NN_results(config_reformer_2nd, result_reformer_2nd)
 
@@ -407,7 +407,7 @@ sampling_config_3rd_filtered_norm = Sampling_Config(
     (sampling_config_3rd.ub .- vec(mean_3rd_filtered)) ./ vec(std_3rd_filtered)
 )
 
-config_reformer_3rd = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 120, 100, 2)
+config_reformer_3rd = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 177, 100, 1)
 train_time_3rd = @elapsed result_reformer_3rd = NN_train(data_reformer_3rd_filtered_norm, config_reformer_3rd, trained_model = model_2nd)
 NN_results(config_reformer_3rd, result_reformer_3rd)
 
@@ -475,7 +475,7 @@ sampling_config_4th_filtered_norm = Sampling_Config(
     (sampling_config_4th.ub .- vec(mean_4th_filtered)) ./ vec(std_4th_filtered)
 )
 
-config_reformer_4th = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 120, 100, 2)
+config_reformer_4th = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 114, 100, 1)
 train_time_4th = @elapsed result_reformer_4th = NN_train(data_reformer_4th_filtered_norm, config_reformer_4th, trained_model = model_3rd)
 NN_results(config_reformer_4th, result_reformer_4th)
 
