@@ -2,7 +2,7 @@
 
 using Plots
 using GLMakie
-using Statistics
+using Statistics, StatsBase
 using Surrogates
 using Flux
 using Flux: params, train!
@@ -75,6 +75,35 @@ function generate_data(f::Function, sampling_config::Sampling_Config, sampling_m
     return data
 end
 
+function load_data(file_path::String, splits::Float64, num_features::Int, num_outputs::Int)
+    
+    # get the location of the script file
+    root = dirname(@__FILE__)
+
+    # a robust representation of the filepath to data file
+    csv_file_path = joinpath(root, file_path)
+
+    # read the data from the csv file
+    rdata = DataFrame(CSV.File(csv_file_path, header=false))
+
+    # extract x (first 5 columns) and y (6th column)
+    x = Matrix(rdata[:, 1:num_features])'
+    y = reshape(rdata[:, num_features + num_outputs], :, num_outputs)'
+
+    # split the data into train set and test set
+    train_data, test_data = Flux.splitobs((x, y), at = splits)
+
+    # convert the data to the format of NN_Data
+    data_flame = NN_Data()
+    data_flame.x_train = Float32.(train_data[1])
+    data_flame.y_train = Float32.(train_data[2])
+    data_flame.x_test = Float32.(test_data[1])
+    data_flame.y_test = Float32.(test_data[2])
+
+    return data_flame
+
+end
+
 function generate_and_combine_data(f::Function, configs::Vector{Sampling_Config}, sampling_method::Any, splits::Float64)
     
     combined_x_train, combined_y_train, combined_x_test, combined_y_test = [], [], [], []
@@ -98,36 +127,37 @@ function generate_and_combine_data(f::Function, configs::Vector{Sampling_Config}
     data.x_test = hcat(combined_x_test...)
     data.y_test = hcat(combined_y_test...)
 
-    # Return a tuple or a dictionary if you prefer
     return data
 end
 
-function load_data(file_path::String, splits::Float64, num_features::Int, num_outputs::Int)
-    
-    # get the location of the script file
-    root = dirname(@__FILE__)
+# sample data points from given dataset and track their original indices
+function extract_data_from_given_dataset(x_not_selected, y_not_selected, configs::Vector{Sampling_Config}, complement_indices)
 
-    # a robust representation of the filepath to data file
-    csv_file_path = joinpath(root, file_path)
+    results_x = []
+    results_y = []
+    sampled_indices_per_config = []
 
-    # read the data from the csv file
-    rdata = DataFrame(CSV.File(csv_file_path, header=false))
+    # Filter x and y points based on Sampling_Config bounds
+    for config in configs
+        valid_indices = findall(i -> all(config.lb .<= x_not_selected[:, i] .<= config.ub), 1:size(x_not_selected, 2))
 
-    # Extract x (first 5 columns) and y (6th column)
-    x = Matrix(rdata[:, 1:num_features])'
-    y = reshape(rdata[:, num_features + num_outputs], :, num_outputs)'
+        # If enough valid data points exist, sample them
+        if length(valid_indices) >= config.n_samples
+            sampled_indices = StatsBase.sample(valid_indices, config.n_samples, replace = false)     
+        else
+            println("Not enough data points meet the criteria for config with bounds $(config.lb) to $(config.ub)")
+            sampled_indices = valid_indices    
+        end
 
-    # split the data into train set and test set
-    train_data, test_data = Flux.splitobs((x, y), at = splits)
+        # Store the original indices of the sampled data points
+        original_indices = complement_indices[sampled_indices]
+        push!(sampled_indices_per_config, original_indices)
+        push!(results_x, x_not_selected[:, sampled_indices])
+        push!(results_y, y_not_selected[:, sampled_indices])
 
-    # convert the data to the format of NN_Data
-    data_flame = NN_Data()
-    data_flame.x_train = Float32.(train_data[1])
-    data_flame.y_train = Float32.(train_data[2])
-    data_flame.x_test = Float32.(test_data[1])
-    data_flame.y_test = Float32.(test_data[2])
-
-    return data_flame
+    end
+       
+    return results_x, results_y, vcat(sampled_indices_per_config...)
 
 end
 
@@ -176,17 +206,24 @@ function combine_datasets(data1::NN_Data, data2::NN_Data; splits::Float64=0.8)::
 end
 
 # normalise the data
-function normalise_data(data::NN_Data) 
+function normalise_data(data::NN_Data, norm_y::Bool = false) 
     
     data_norm = NN_Data()
     μ, σ = mean(data.x_train, dims=2), std(data.x_train, dims=2)  # compute the mean and standard deviation of the training set
     data_norm.x_train = Flux.normalise(data.x_train)  # normalise the training set
     data_norm.x_test = (data.x_test .- μ) ./ σ  # normalise the test set using the mean and standard deviation of the training set
     
-    data_norm.y_train = data.y_train
-    data_norm.y_test = data.y_test
-
-    return data_norm, μ, σ
+    if norm_y
+        μ_y, σ_y = mean(data.y_train, dims=2), std(data.y_train, dims=2)  # compute the mean and standard deviation of the training set
+        data_norm.y_train = Flux.normalise(data.y_train)  # normalise the training set
+        data_norm.y_test = (data.y_test .- μ_y) ./ σ_y  # normalise the test set using the mean and standard deviation of the training set
+        return data_norm, μ, σ, μ_y, σ_y
+    else
+        data_norm.y_train = data.y_train
+        data_norm.y_test = data.y_test
+        return data_norm, μ, σ
+    end
+   
 end
 
 # define the loss function with L2 regularization
@@ -262,6 +299,7 @@ function NN_train(data::NN_Data, c::NN_Config; trained_model::Chain = Chain())
     end
 
     # set the loss function
+    # loss(x,y) = Flux.mse(result.model(x), y) 
     loss(x,y) = loss_l2(x, y, result.model, c.lambda)
     
     # define the training process
@@ -575,32 +613,47 @@ function plot_learning_curve(config::NN_Config, loss_hist::Vector)
 end
 
 # visualise the surrogate model using tricontour plot, marking other points worth mentioning
-function plot_dual_contours(data::NN_Data, model::Chain, x_star::Vector{Float64}, scattered_point_label::String, scattered_point, selected_dim::Vector{Int})
+function plot_dual_contours(data::NN_Data, model::Chain, x_star::Vector{Float64}, scattered_point_label::String, scattered_point, selected_dim_x::Vector{Int}, selected_dim_y::Int=1)
     
     # extract the selected dimensions
     x = hcat(data.x_train, data.x_test)
-    x1 = collect(x[selected_dim[1], :])
-    x2 = collect(x[selected_dim[2], :])
+    x1 = collect(x[selected_dim_x[1], :])
+    x2 = collect(x[selected_dim_x[2], :])
+
+    # create a combined matrix of x1 and x2, then find unique rows and their indices
+    points = [x1 x2]
+    unique_ind = unique(i -> points[i, :], 1:size(points, 1))
+    x1_unique = x1[unique_ind]
+    x2_unique = x2[unique_ind]
 
     # extract the output
-    y_true = collect(vec(hcat(data.y_train, data.y_test)))
-    y_pred = collect(vec(model(x)))
+    y_true = collect(vec(hcat(data.y_train, data.y_test)[selected_dim_y, :]))
+    y_pred = collect(vec(model(x)[selected_dim_y, :]))
+
+    # Select y_true and y_pred based on unique indices
+    y_true_unique = y_true[unique_ind]
+    y_pred_unique = y_pred[unique_ind]
+
+    # Determine color limits based on combined data
+    global_min = min(minimum(y_true_unique), minimum(y_pred_unique))
+    global_max = max(maximum(y_true_unique), maximum(y_pred_unique))
+    levels = range(global_min, stop = global_max, length = 11)  # 10 intervals
 
     # plot the tricontour of the true output and the surrogate output
     fig = Figure(size = (800, 400))
 
-    ax1 = Axis(fig[1, 1], xlabel = "x_$(selected_dim[1])", ylabel = "x_$(selected_dim[2])", title = "Simulator")
-    ax2 = Axis(fig[1, 3], xlabel = "x_$(selected_dim[1])", ylabel = "x_$(selected_dim[2])", title = "Surrogate")
+    ax1 = Axis(fig[1, 1], xlabel = "x_$(selected_dim_x[1])", ylabel = "x_$(selected_dim_x[2])", title = "Simulator")
+    ax2 = Axis(fig[1, 3], xlabel = "x_$(selected_dim_x[1])", ylabel = "x_$(selected_dim_x[2])", title = "Surrogate")
     
     # plot the tricontour of the true output
-    tr_true = tricontourf!(ax1, x1, x2, y_true, triangulation = Makie.DelaunayTriangulation(), color = :viridis)
-    # Makie.scatter!(ax1, x_star[selected_dim[1]], x_star[selected_dim[2]], color = y_true)
-    sca = Makie.scatter!(ax1, x_star[selected_dim[1]], x_star[selected_dim[2]], color = :green)
-    # text!(ax1, x_star[selected_dim[1]], x_star[selected_dim[2]], text = "x_star", align = (:center, :top))
+    tr_true = tricontourf!(ax1, x1_unique, x2_unique, y_true_unique, levels = levels, triangulation = Makie.DelaunayTriangulation(), colormap = :viridis)
+    # Makie.scatter!(ax1, x_star[selected_dim_x[1]], x_star[selected_dim_x[2]], color = y_true)
+    sca = Makie.scatter!(ax1, x_star[selected_dim_x[1]], x_star[selected_dim_x[2]], color = :green)
+    # text!(ax1, x_star[selected_dim_x[1]], x_star[selected_dim_x[2]], text = "x_star", align = (:center, :top))
     
     # plot the tricontour of the surrogate output
-    tr_pred = tricontourf!(ax2, x1, x2, y_pred, triangulation = Makie.DelaunayTriangulation(), color = :viridis)
-    sca = Makie.scatter!(ax2, x_star[selected_dim[1]], x_star[selected_dim[2]], color = :green)
+    tr_pred = tricontourf!(ax2, x1_unique, x2_unique, y_pred_unique, levels = levels, triangulation = Makie.DelaunayTriangulation(), colormap = :viridis)
+    sca = Makie.scatter!(ax2, x_star[selected_dim_x[1]], x_star[selected_dim_x[2]], color = :green)
     
     # plot the scattered points
     sca2 = Makie.scatter!(NaN, NaN)
@@ -610,26 +663,17 @@ function plot_dual_contours(data::NN_Data, model::Chain, x_star::Vector{Float64}
         Legend(fig[2, :], [sca], ["x_star"], orientation = :horizontal)
     else
         for val in scattered_point[start_index:end]
-            sca2 = Makie.scatter!(ax1, val[selected_dim[1]], val[selected_dim[2]], color = :orange)
-            sca2 = Makie.scatter!(ax2, val[selected_dim[1]], val[selected_dim[2]], color = :orange)
+            sca2 = Makie.scatter!(ax1, val[selected_dim_x[1]], val[selected_dim_x[2]], color = :orange)
+            sca2 = Makie.scatter!(ax2, val[selected_dim_x[1]], val[selected_dim_x[2]], color = :orange)
         end
         Legend(fig[2, :], [sca, sca2], ["x_star", scattered_point_label], orientation = :horizontal)
 
     end
     
-    # determine the color limits for the plots
-    min_val = minimum([y_true; y_pred])
-    max_val = maximum([y_true; y_pred])
-    color_limits = (min_val, max_val)
-    
-    # Set the color limits for the tricontour plots
-    tr_true.climits = color_limits
-    tr_pred.climits = color_limits
-    
     Colorbar(fig[1, 2], tr_true)
     Colorbar(fig[1, 4], tr_pred)
 
-    fig
+    return fig
 
 end
 
@@ -642,15 +686,22 @@ function plot_single_contour(data::NN_Data, model::Chain, x_star::Vector{Float64
     x1 = collect(x[selected_dim[1], :])
     x2 = collect(x[selected_dim[2], :])
 
+    # create a combined matrix of x1 and x2, then find unique rows and their indices
+    points = [x1 x2]
+    unique_ind = unique(i -> points[i, :], 1:size(points, 1))
+    x1_unique = x1[unique_ind]
+    x2_unique = x2[unique_ind]
+
     # extract the output
-    y = results
+    y = results[unique_ind]
+
     
     # plot the tricontour of the true output and the surrogate output
     fig = Figure(size = (400, 420))
     ax1 = Axis(fig[1, 1], xlabel = "x_$(selected_dim[1])", ylabel = "x_$(selected_dim[2])", title = label)
     sca1 = Makie.scatter!(ax1, x_star[selected_dim[1]], x_star[selected_dim[2]], color = :green)
     # plot the tricontour of the true output
-    tr = tricontourf!(ax1, x1, x2, y, triangulation = Makie.DelaunayTriangulation(), color = :viridis)
+    tr = tricontourf!(ax1, x1_unique, x2_unique, y, triangulation = Makie.DelaunayTriangulation(), colormap = :viridis)
     
     # plot the scattered points
     sca2 = Makie.scatter!(NaN, NaN)
@@ -668,7 +719,7 @@ function plot_single_contour(data::NN_Data, model::Chain, x_star::Vector{Float64
     Colorbar(fig[1, 2], tr)
     Legend(fig[2, :], [sca1, sca2], ["x_star", scattered_point_label], orientation = :horizontal)
 
-    fig
+    return fig
 
 end
 
