@@ -103,7 +103,7 @@ set_optimizer(MILP_bt, Gurobi.Optimizer)
 set_silent(MILP_bt)
 set_attribute(MILP_bt, "TimeLimit", 10)
 # current compressed model has no dropout layer but the original model has dropout layer
-compressed_model, removed_neurons, bounds_U, bounds_L = NN_formulate!(MILP_bt, model_init, sampling_config_init_norm.ub, sampling_config_init_norm.lb; bound_tightening="standard", compress=true, silent=false);
+compressed_model, removed_neurons, bounds_U, bounds_L = NN_formulate!(MILP_bt, model_init, sampling_config_init_norm.ub, sampling_config_init_norm.lb; bound_tightening="standard", compress=true, silent=false)
 
 @objective(MILP_bt, Min, MILP_bt[:x][4,1])
 set_attribute(MILP_bt, "TimeLimit", 1800)
@@ -115,7 +115,6 @@ optimize!(MILP_bt)
 write_to_file(MILP_bt, joinpath(@__DIR__, "MILP_init_bt.mps"))
 
 f_hat_bt, f_true_bt, x_star_init_bt, x_star_init_norm_bt, gap_bt = solution_evaluate(MILP_bt, compute_growth_rate, mean = mean_init, std = std_init)
-x_star_init_bt
 
 # store multiple solutions in the solution pool
 num_solutions_init_bt = MOI.get(MILP_bt, MOI.ResultCount())
