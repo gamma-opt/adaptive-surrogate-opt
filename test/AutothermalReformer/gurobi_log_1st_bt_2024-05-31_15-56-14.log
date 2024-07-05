@@ -1,0 +1,52 @@
+
+Gurobi 11.0.2 (win64) logging started Fri May 31 15:56:16 2024
+
+Set parameter LogFile to value "c:\Users\liuy43\OneDrive - Aalto University\Projects\NNSurrogate\test\AutothermalReformer\gurobi_log_1st_bt_2024-05-31_15-56-14.log"
+
+Gurobi 11.0.2 (win64) logging started Fri May 31 15:56:18 2024
+
+Set parameter LogFile to value "c:\Users\liuy43\OneDrive - Aalto University\Projects\NNSurrogate\test\AutothermalReformer\gurobi_log_1st_bt_2024-05-31_15-56-14.log"
+Gurobi Optimizer version 11.0.2 build v11.0.2rc0 (win64 - Windows 10.0 (19045.2))
+
+CPU model: 11th Gen Intel(R) Core(TM) i5-1145G7 @ 2.60GHz, instruction set [SSE2|AVX|AVX2|AVX512]
+Thread count: 4 physical cores, 8 logical processors, using up to 8 threads
+
+Optimize a model with 212 rows, 131 columns and 745 nonzeros
+Model fingerprint: 0x7f3f7336
+Variable types: 92 continuous, 39 integer (39 binary)
+Coefficient statistics:
+  Matrix range     [4e-04, 3e+00]
+  Objective range  [1e+00, 1e+00]
+  Bounds range     [0e+00, 0e+00]
+  RHS range        [5e-03, 3e+00]
+Presolve removed 102 rows and 20 columns
+Presolve time: 0.00s
+Presolved: 110 rows, 111 columns, 525 nonzeros
+Variable types: 76 continuous, 35 integer (35 binary)
+
+Root relaxation: objective 1.602075e+00, 97 iterations, 0.00 seconds (0.00 work units)
+
+    Nodes    |    Current Node    |     Objective Bounds      |     Work
+ Expl Unexpl |  Obj  Depth IntInf | Incumbent    BestBd   Gap | It/Node Time
+
+     0     0    1.60207    0   15          -    1.60207      -     -    0s
+H    0     0                       1.4810513    1.60207  8.17%     -    0s
+     0     0    1.53750    0   22    1.48105    1.53750  3.81%     -    0s
+     0     0    1.53750    0   21    1.48105    1.53750  3.81%     -    0s
+     0     0    1.51510    0   17    1.48105    1.51510  2.30%     -    0s
+     0     0    1.48105    0   18    1.48105    1.48105  0.00%     -    0s
+
+Cutting planes:
+  Gomory: 1
+  MIR: 9
+  Flow cover: 4
+
+Explored 1 nodes (155 simplex iterations) in 0.04 seconds (0.01 work units)
+Thread count was 8 (of 8 available processors)
+
+Solution count 1: 1.48105 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 1.481051317202e+00, best bound 1.481051317202e+00, gap 0.0000%
+
+User-callback calls 276, time in user-callback 0.00 sec
