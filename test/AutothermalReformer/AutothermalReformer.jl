@@ -102,7 +102,6 @@ U_bounds = vcat(Float32.(sampling_config_init.ub), fill(Float32(1e6), 52))
 # convert the trained nerual net to a JuMP model
 build_time = @elapsed MILP_model = JuMP_Model(model_init, L_bounds, U_bounds)
 
-
 # m.obj = pyo.Objective(expr=m.reformer.outputs[h2_idx], sense=pyo.maximize)
 @objective(MILP_model, Max, MILP_model[:x][5,10])
 # m.con = pyo.Constraint(expr=m.reformer.outputs[n2_idx] <= 0.34)
@@ -146,8 +145,8 @@ num_solutions_init_bt = MOI.get(MILP_bt, MOI.ResultCount())
 sol_pool_x_init_bt, _ = sol_pool(MILP_bt, num_solutions_init_bt, mean = mean_init, std = std_init)
 
 # visualise the surrogate model 
-fig = plot_dual_contours(data_reformer_norm, model_init, x_star_init_norm, "sol_pool", sol_pool_x_init_bt, [1,2], 10)
-Makie.save(joinpath(root, "images/Comparison of Simulator and Surrogate Model Contours with Optimal Solution Points.png"), fig)
+fig = plot_dual_contours(data_reformer_norm, model_init, x_star_init_norm, "sub-optimal solutions", sol_pool_x_init_bt, [1,2], 10)
+Makie.save(joinpath(root, "images/Comparison of Simulator and Surrogate Model Contours with Optimal Solution Points.pdf"), fig)
 
 #------------ apply Monte Carlo Dropout to the surrogate model ------------#
 config_reformer_dp = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.2, Adam(0.001, (0.9, 0.999), 1e-07), 1, 800, 100, 0)
@@ -155,7 +154,7 @@ train_time = @elapsed result_reformer = NN_train(data_reformer_norm, config_refo
 NN_results(config_reformer, result_reformer)
 model_init_dp = result_reformer.model
 
-pred, pred_dist, means, stds, x_top_std = predict_dist(data_reformer_norm, model_init_dp, 100, 10)
+pred, pred_dist, means, stds, x_top_std = predict_dist(data_reformer_norm, model_init_dp, 100, 50)
 fig = plot_dual_contours(data_reformer_norm, model_init, x_star_init_norm, "x_top_std", [col for col in eachcol(x_top_std)], [1,2], 10)
 Makie.save(joinpath(root, "images/Comparison of Simulator and Surrogate Model Contours with High Variance Points Marked.png"), fig)
 
@@ -168,8 +167,8 @@ savefig(joinpath(root, "images/Predictive Distribution of the 5th Entry of x_tes
 pred_rm = remove_outliers_per_dist(pred_dist[5][:,10])
 kdeplot(pred_rm, pred_point[5])
 
-fig = plot_single_contour(data_reformer_norm, model_init_dp, x_star_init_norm, "Uncertainty of the Predictions", vec(stds),"x_top_std", [col for col in eachcol(x_top_std)], [1,2])
-Makie.save(joinpath(root, "images/tricontour_Uncertainty of the Predictions_10.png"), fig)
+fig = plot_single_contour(data_reformer_norm, model_init_dp, x_star_init_norm, "Uncertainty of the Predictions", vec(stds),"points with high uncertainty", [col for col in eachcol(x_top_std)], [1,2])
+Makie.save(joinpath(root, "images/tricontour_Uncertainty of the Predictions_50.pdf"), fig)
 
 #------------------------------ 1st iteration --------------------------#
 # Resample densely around the points with the highest uncertainty
@@ -181,12 +180,12 @@ y_1st_added = y[:, selected_indices_1st]
 x_1st = x[:, vcat(selected_indices_1st, selected_indices)]
 y_1st = y[:, vcat(selected_indices_1st, selected_indices)]
 
-Plots.scatter(x_1st_added[1, :], x_1st_added[2, :], color = :lightgreen, xlabel="x₁", ylabel="x₂", legend=:bottomright, label="Resampled Data")
-Plots.scatter!(data_reformer.x_train[1, :], data_reformer.x_train[2, :], color = :viridis, xlabel="x₁", ylabel="x₂", legend=:bottomright, label="Old Training Data")
-Plots.scatter!(data_reformer.x_test[1, :], data_reformer.x_test[2, :], color = :orange, legend=:bottomright, label="Old Test Data")
-vline!([sampling_config_1st.lb[1],sampling_config_1st.ub[1]], label="x1 bounds", linestyle=:dashdot, color=:red, linewidth = 2)
-hline!([sampling_config_1st.lb[2],sampling_config_1st.ub[2]], label="x2 bounds", linestyle=:dashdot, color=:purple, linewidth = 2)
-savefig(joinpath(root, "images/Scatter_plot_of_resampled_data.svg"))
+Plots.scatter(x_1st_added[1, :], x_1st_added[2, :], color = :lightgreen, xlabel="x₁", ylabel="x₂", legend=:bottomright, label="Resampled Data", size = (530, 500), legendfontsize = 10, tickfontsize = 10, labelfontsize = 14)
+Plots.scatter!(data_reformer.x_train[1, :], data_reformer.x_train[2, :], color = :viridis, xlabel="x₁", ylabel="x₂", legend=:bottomright, label="Training Data (initial) ", legendfontsize = 10, tickfontsize = 10, labelfontsize = 14)
+Plots.scatter!(data_reformer.x_test[1, :], data_reformer.x_test[2, :], color = :orange, legend=:bottomright, label="Test Data (initial)", legendfontsize = 10, tickfontsize = 10, labelfontsize = 14)
+vline!([sampling_config_1st.lb[1],sampling_config_1st.ub[1]], label="x₁ bounds", linestyle=:dashdot, color=:red, linewidth = 2, legendfontsize = 10, tickfontsize = 10, labelfontsize = 14)
+hline!([sampling_config_1st.lb[2],sampling_config_1st.ub[2]], label="x₂ bounds", linestyle=:dashdot, color=:purple, linewidth = 2, legendfontsize = 10, tickfontsize = 10, labelfontsize = 14)
+savefig(joinpath(root, "images/Scatter_plot_of_resampled_data.pdf"))
 
 data_reformer_1st = NN_Data()
 train_data_1st, test_data_1st = Flux.splitobs((x_1st, y_1st), at = 0.8)
@@ -232,10 +231,10 @@ build_time = @elapsed compressed_model_1st, removed_neurons_1st, bounds_U_1st, b
 
 set_attribute(MILP_bt_1st, "TimeLimit", 1800)
 unset_silent(MILP_bt_1st)
-log_filename = "gurobi_log_1st_bt_$(Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")).log"
-set_optimizer_attribute(MILP_bt_1st, "LogFile", joinpath(@__DIR__, log_filename))
+# log_filename = "gurobi_log_1st_bt_$(Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")).log"
+# set_optimizer_attribute(MILP_bt_1st, "LogFile", joinpath(@__DIR__, log_filename))
 solving_time = @elapsed optimize!(MILP_bt_1st)
-write_to_file(MILP_bt_1st, joinpath(@__DIR__, "model_1st_bt.mps"))
+# write_to_file(MILP_bt_1st, joinpath(@__DIR__, "model_1st_bt.mps"))
 
 x_star_1st_norm = [value.(MILP_bt_1st[:x][0,i]) for i in 1:length(MILP_bt_1st[:x][0,:])]
 x_star_1st = [value.(MILP_bt_1st[:x][0,i]) for i in 1:length(MILP_bt_1st[:x][0,:])] .* std_1st_filtered .+ mean_1st_filtered
@@ -353,7 +352,7 @@ set_silent(MILP_bt_2nd)
 set_attribute(MILP_bt_2nd, "TimeLimit", 10)
 
 build_time = @elapsed compressed_model_2nd, removed_neurons_2nd, bounds_U_2nd, bounds_L_2nd = NN_formulate!(MILP_bt_2nd, model_2nd, sampling_config_2nd_filtered_norm.ub, sampling_config_2nd_filtered_norm.lb; bound_tightening="standard", compress=true, silent=false)
-
+#-------------------------------#
 # m.obj = pyo.Objective(expr=m.reformer.outputs[h2_idx], sense=pyo.maximize)
 @objective(MILP_bt_2nd, Max, MILP_bt_2nd[:x][5,10])
 # m.con = pyo.Constraint(expr=m.reformer.outputs[n2_idx] <= 0.34)
@@ -441,8 +440,8 @@ println("NG Steam Ratio:", x_star_3rd[2])
 println("H2 Concentration:", objective_value(MILP_bt_3rd) * std_3rd_filtered_y[10] + mean_3rd_filtered_y[10])
 println("N2 Concentration:", value.(MILP_bt_3rd[:x][5,12]) * std_3rd_filtered_y[12] + mean_3rd_filtered_y[12])
 
-fig = plot_dual_contours(data_reformer_3rd_filtered_norm, model_3rd, x_star_3rd_norm, "sol_pool", sol_pool_x_1st_filtered, [1,2], 10)
-Makie.save(joinpath(root, "images/Comparison of Simulator and Surrogate Model Contours with Optimal Solution Points 3rd Iteration_filtered.png"), fig)
+fig = plot_dual_contours(data_reformer_3rd_filtered_norm, model_3rd, x_star_3rd_norm, "sub-optimal solutions", sol_pool_x_1st_filtered, [1,2], 10)
+Makie.save(joinpath(root, "images/Comparison of Simulator and Surrogate Model Contours with Optimal Solution Points 3rd Iteration_filtered.pdf"), fig)
 
 #------------------------------ 4th iteration --------------------------#
 # Resample densely around the points with the highest uncertainty
@@ -512,7 +511,7 @@ println("N2 Concentration:", value.(MILP_bt_4th[:x][5,12]) * std_4th_filtered_y[
 num_solutions_4th_filtered = MOI.get(MILP_bt_4th, MOI.ResultCount())
 sol_pool_x_4th_filtered, _ = sol_pool(MILP_bt_4th, num_solutions_4th_filtered, mean = mean_4th_filtered, std = std_4th_filtered)
 
-fig = plot_dual_contours(data_reformer_4th_filtered_norm, model_4th, x_star_4th_norm, "sol_pool", sol_pool_x_4th_filtered, [1,2], 10)
-Makie.save(joinpath(root, "images/Comparison of Simulator and Surrogate Model Contours with Optimal Solution Points 4th Iteration_filtered.png"), fig)
+fig = plot_dual_contours(data_reformer_4th_filtered_norm, model_4th, x_star_4th_norm, "sub-optimal solutions", sol_pool_x_4th_filtered, [1,2], 10)
+Makie.save(joinpath(root, "images/Comparison of Simulator and Surrogate Model Contours with Optimal Solution Points 4th Iteration_filtered.pdf"), fig)
 
 

@@ -1,13 +1,17 @@
-using MATLAB
 using Statistics
 using Surrogates
 using Flux
-using CSV, DataFrames
+using JuMP
+using Gurobi
+using MATLAB
+using DataFrames, CSV
 using BSON
-using Plots
+using Dates
+using Random
 
 include("../../src/NNSurrogate.jl")
 include("../../src/NNJuMP.jl")
+include("../../src/NNGogeta.jl")
 include("../../src/NNOptimise.jl")
 include("../../src/MCDropout.jl")
 
@@ -22,133 +26,300 @@ blade_max_temp(x::NTuple{6, Float64}) = mat"computeMaxTemp($(x[1]), $(x[2]), $(x
 
 #--------------------------------- Initial training ---------------------------------#
 
-# bounds = [Float64[120, 900, 20, 40, 30, 10], Float64[180, 1200, 40, 60, 50, 30]]
 L_bounds_init = [120, 900, 20, 40, 30, 10]
 U_bounds_init = [180, 1200, 40, 60, 50, 30]
 sampling_config_init = Sampling_Config(1000, L_bounds_init, U_bounds_init)
 
-# data_temp = generate_data(blade_max_temp, bounds, 1000, SobolSample(), 0.8)
-
-# get the location of the script file
+# data_temp = generate_data(blade_max_temp, sampling_config_init, SobolSample(), 0.8)
 root = dirname(@__FILE__)
-
-# a robust representation of the filepath to data file
 csv_file_path = joinpath(root, "combined_data.csv")
 
-# read the data from the csv file
-data = DataFrame(CSV.File(csv_file_path, header=false))
+data_temp = load_data(csv_file_path, 0.8, 6, 1)
 
-# Extract x (first 6 columns) and y (7th column)
-x = Matrix(data[:, 1:6])' 
-y = reshape(data[:, 7], :, 1)'
+# normalise the data, including the outputs
+# data_temp_norm, mean_init, std_init = normalise_data(data_temp, false)
 
-# split the data into train set and test set
-train_data, test_data = Flux.splitobs((x, y), at = 0.8)
+# sampling_config_init_norm = Sampling_Config(
+#     sampling_config_init.n_samples,
+#     (sampling_config_init.lb .- vec(mean_init)) ./ vec(std_init),
+#     (sampling_config_init.ub .- vec(mean_init)) ./ vec(std_init)
+# )
 
-# convert the data to the format of NN_Data
-data_temp = NN_Data()
-data_temp.x_train = Float64.(train_data[1])
-data_temp.y_train = Float64.(train_data[2])
-data_temp.x_test = Float64.(test_data[1])
-data_temp.y_test = Float64.(test_data[2])
+# train the surrogate model
+config_temp = NN_Config([6,50,50,1], [relu, relu, identity], false, 0.0, 0.0, Flux.Optimise.Optimiser(Adam(0.1, (0.9, 0.999)), ExpDecay(1.0)), 1, 800, 1000, 0)
 
-config1_temp = NN_Config([6,50,50,1], [relu, relu, identity], false, 0.01, 0.1, Flux.Optimise.Optimiser(Adam(0.1, (0.9, 0.999)), ExpDecay(1.0)), 1, 800, 5000, 0)
-
-# trian the nerual net
-result_temp = NN_train(data_temp, config1_temp)
-NN_results(config1_temp, result_temp)
+train_time = @elapsed result_temp = NN_train(data_temp, config_temp)
+NN_results(config_temp, result_temp)
+plot_learning_curve(config_temp, result_temp.err_hist)
 
 model_init = result_temp.model
-BSON.@save "blade_temp_init.bson" model_init
-BSON.@load "blade_temp_init.bson" model_init
+BSON.@save joinpath(@__DIR__, "surrogate_init.bson") model_init
+BSON.@load joinpath(@__DIR__, "surrogate_init.bson") model_init
 
-# bounds of the input layer, and the other layers (arbitrary large big-M)
-L_bounds = vcat(Float32.(sampling_config_init.lb), fill(Float32(-1e6), 101), sum(config1_temp.layer[2:end]))
-U_bounds = vcat(Float32.(sampling_config_init.ub), fill(Float32(1e6), 101), sum(config1_temp.layer[2:end]))
+#-----------Gogeta------------#
+@info "bound tightening and compression (Gogeta.jl)"
+MILP_bt = Model()
+set_optimizer(MILP_bt, Gurobi.Optimizer)
+set_silent(MILP_bt)
+set_attribute(MILP_bt, "TimeLimit", 10)
+build_time = @elapsed compressed_model, removed_neurons, bounds_U, bounds_L = NN_formulate!(MILP_bt, model_init, sampling_config_init.ub, sampling_config_init.lb; bound_tightening="fast", compress=true, silent=false);
 
-# convert the trained nerual net to a JuMP model
-MILP_model = JuMP_Model(model_init, L_bounds, U_bounds)
-optimize!(MILP_model)
+@objective(MILP_bt, Min, MILP_bt[:x][3,1])
 
-f_hat, f_true, x_star_init, gap = solution_evaluate(MILP_model, blade_max_temp)
+set_attribute(MILP_bt, "TimeLimit", 1800)
+unset_silent(MILP_bt)
+log_filename = "gurobi_log_init_bt_$(Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")).log"
+set_optimizer_attribute(MILP_bt, "LogFile", joinpath(@__DIR__, log_filename))
+solving_time = @elapsed optimize!(MILP_bt)
+write_to_file(MILP_bt, joinpath(@__DIR__, "model_init_bt.mps"))
+MILP_bt = read_from_file(joinpath(@__DIR__, "model_init_bt.mps"))
 
-#------------ optional: apply Monte Carlo Dropout if dropout_rate > 0
+x_star_init = [value.(MILP_bt[:x][0,i]) for i in 1:length(MILP_bt[:x][0,:])]
+# x_star_init_norm = [value.(MILP_bt[:x][0,i]) for i in 1:length(MILP_bt[:x][0,:])] .* std_init .+ mean_init
 
-pred_dist = predict_dist(data_temp, model_init, 100)
-pred_point, sd = predict_point(data_temp, model_init, 100)
-pred_rm = remove_outliers(data_temp, pred_dist)
+solution_evaluate(MILP_bt, blade_max_temp)
 
-kdeplot(pred_dist[1], pred_point[1])
-kdeplot(pred_rm[1], pred_point[1])
+# store multiple solutions in the solution pool
+num_solutions_init_bt = MOI.get(MILP_bt, MOI.ResultCount())
+sol_pool_x_init_bt, _ = sol_pool(MILP_bt, num_solutions_init_bt)
 
-# expected prediction error
-pred_ee = expected_prediction_error(data_temp, model_init, 100)
-kdeplot(pred_ee, mean(pred_ee))
-histogram(data_temp.x_test[1, :], weights = pred_ee, bins = 200, xlabel = "x_test[1]", ylabel = "pred_ee", legend=false)
-x_belows, x_aboves = find_max_ee(data_temp, model_init, x_star_init, 100)
+# visualise the surrogate model 
+fig = plot_dual_contours(data_temp, model_init, x_star_init, "sol_pool", sol_pool_x_init_bt, [1,2], 1)
+Makie.save(joinpath(root, "images/exp1_init_dual_sol_pool.png"), fig)
 
-# expected improvement
-pred_ei = expected_improvement(data_temp, model_init, x_star_init, 100)
-kdeplot(pred_ei, mean(pred_ei))
-histogram(data_temp.x_test[1, :], weights = pred_ei, bins = 200, xlabel = "x_test[1]", ylabel = "pred_ei", legend=false)
-x_belows, x_aboves = find_max_ei(data_temp, model_init, x_star_init, 100)
+#------------ apply Monte Carlo Dropout to the surrogate model ------------#
+config_temp_dp = NN_Config([6,50,50,1], [relu, relu, identity], false, 0.0, 0.1, Flux.Optimise.Optimiser(Adam(0.1, (0.9, 0.999)), ExpDecay(1.0)), 1, 800, 1000, 0)
+train_time = @elapsed result_temp_dp = NN_train(data_temp, config_temp_dp)
+NN_results(config_temp_dp, result_temp_dp)
+model_init_dp = result_temp.model
 
+pred, pred_dist, means, stds, x_top_std = predict_dist(data_temp, model_init_dp, 100, 10)
+fig = plot_dual_contours(data_temp, model_init, x_star_init, "points with top 10 highest uncertainty", [col for col in eachcol(x_top_std)], [1,2], 1)
+Makie.save(joinpath(root, "images/exp1_init_dual_top_std.pdf"), fig)
 
-#--------------------------------- 1st iteration ---------------------------------#
+# plot the predictive distribution of the 5th entry of x_test
+pred_point, _ = predict_point(data_temp, model_init_dp, 100, 1)
+println(data_temp.x_test[:, 5])
+kdeplot(pred_dist[5][:,1], means[1,5])
+savefig(joinpath(root, "images/exp1_Predict_Distribution_5th_Entry_x_test.svg"))
+# remove the outliers
+# pred_rm = remove_outliers_per_dist(pred_dist[5][:,10])
+# kdeplot(pred_rm, pred_point[5])
 
-#-----strategy 1: fixed percentage of the search space
+fig = plot_single_contour(data_temp, model_init_dp, x_star_init, "Uncertainty of the Predictions", vec(stds),"x_top_std", [col for col in eachcol(x_top_std)], [1,2])
+Makie.save(joinpath(root, "images/exp1_Uncertainty_10.svg"), fig)
 
-# generate new samples around x_star
-sampling_config_1st = generate_resample_config(sampling_config_init, x_star_init, 0.75, ("fixed_percentage_density", 1.0), "fixed_percentage")
+#------------------------------ 1st iteration --------------------------#
+# Resample densely around the points with the highest uncertainty
+sampling_configs_1st, sampling_config_1st = generate_resample_configs_mc(sampling_config_init, [x_top_std x_star_init hcat(sol_pool_x_init_bt...)[:, 2:end]], 0.10, 0.3, zeros(Float64, 6, 1), ones(Float64, 6, 1))
 
-# read the new generated data based on the new sampling configuration
-csv_file_path = joinpath(root, "combined_data_1st_mc.csv")
-data = DataFrame(CSV.File(csv_file_path, header=false))
+data_temp_1st_new = generate_and_combine_data(blade_max_temp, sampling_configs_1st, SobolSample(), 0.8)
+data_temp_1st = combine_datasets(data_temp, data_temp_1st_new)
+data_temp_1st_filtered = filter_data_within_bounds(data_temp_1st, sampling_config_1st.lb, sampling_config_1st.ub)
 
-# Extract x (first 6 columns) and y (7th column)
-x = Matrix(data[:, 1:6])' 
-y = reshape(data[:, 7], :, 1)'
+x_1st_added = hcat(data_temp_1st_new.x_train, data_temp_1st_new.x_test)
 
-# split the data into train set and test set
-train_data, test_data = Flux.splitobs((x, y), at = 0.8)
+Plots.scatter(x_1st_added[1, :], x_1st_added[2, :], color = :lightgreen, xlabel="x₁", ylabel="x₂", legend=:bottomright, label="Resampled Data")
+Plots.scatter!(data_temp.x_train[1, :], data_temp.x_train[2, :], color = :viridis, xlabel="x₁", ylabel="x₂", legend=:bottomright, label="Initial Training Data")
+Plots.scatter!(data_temp.x_test[1, :], data_temp.x_test[2, :], color = :orange, legend=:bottomright, label="Initial Test Data")
+vline!([sampling_config_1st.lb[1],sampling_config_1st.ub[1]], label="x₁ bounds", linestyle=:dashdot, color=:red, linewidth = 2)
+hline!([sampling_config_1st.lb[2],sampling_config_1st.ub[2]], label="x₂ bounds", linestyle=:dashdot, color=:purple, linewidth = 2)
+savefig(joinpath(root, "images/exp1_1st_scattered_point.svg"))
 
-# convert the data to the format of NN_Data
-data_temp_1st = NN_Data()
-data_temp_1st.x_train = Float32.(train_data[1])
-data_temp_1st.y_train = Float32.(train_data[2])
-data_temp_1st.x_test = Float32.(test_data[1])
-data_temp_1st.y_test = Float32.(test_data[2])
+println("# New added samples: ", sampling_config_1st.n_samples)
+println(" # Previous samples: " ,sampling_config_init.n_samples)
+println(" # Filtered samples: ", size(data_temp_1st_filtered.x_train)[2] + size(data_temp_1st_filtered.x_test)[2])
 
-config1_temp = NN_Config([6,50,50,1], [relu, relu, identity], false, 0.01, 0.0, Flux.Optimise.Optimiser(Adam(0.01, (0.9, 0.999)), ExpDecay(0.1)), 1, round(Int, sampling_config_1st.n_samples*0.8), 5000, 1)
-# config2_temp = NN_Config([6,512,256,1], [relu, relu, identity], false, 0.01, 0.0, Adam(), 1, 400, 5000, 0)
-result_temp = NN_train(data_temp, config1_temp, trained_model = model_init)
-NN_results(config1_temp, result_temp)
-x_max_mse, y_max_mse = find_max_mse(data_temp, result_temp.model)
+# data_temp_1st_filtered_norm, mean_1st_filtered, std_1st_filtered, mean_1st_filtered_y, std_1st_filtered_y = normalise_data(data_temp_1st_filtered, true)
 
-model_1st = result_temp.model
-BSON.@save "blade_temp_1st.bson" model_1st
-BSON.@load "blade_temp_1st.bson" model_1st
+sampling_config_1st_filtered = Sampling_Config(
+    sampling_config_1st.n_samples,
+    sampling_config_1st.lb,
+    sampling_config_1st.ub
+)
 
-L_bounds = vcat(Float32.(sampling_config_1st.lb), fill(Float32(-1e6), sum(config1_temp.layer[2:end])))
-U_bounds = vcat(Float32.(sampling_config_1st.ub), fill(Float32(1e6), sum(config1_temp.layer[2:end])))
+config_temp_1st = NN_Config([6,50,50,1], [relu, relu, identity], false, 0.0, 0.0, Flux.Optimise.Optimiser(Adam(0.1, (0.9, 0.999)), ExpDecay(1.0)), 1, size(data_temp_1st_filtered.x_train)[2], 1000, 1)
+train_time_1st = @elapsed result_temp_1st = NN_train(data_temp_1st_filtered, config_temp_1st, trained_model = model_init)
+NN_results(config_temp_1st, result_temp_1st)
 
-MILP_model_1st = rebuild_JuMP_Model(model_1st, MILP_model, config1_temp.freeze, L_bounds, U_bounds)
-warmstart_JuMP_Model(MILP_model_1st, x_star_init)
-optimize!(MILP_model_1st)
+model_1st = result_temp_1st.model
+BSON.@save joinpath(@__DIR__, "surrogate_1st.bson") model_1st
+BSON.@load joinpath(@__DIR__, "surrogate_1st.bson") model_1st
 
-f_hat_1st, f_true_1st, x_star_1st, gap_1st = solution_evaluate(MILP_model_1st, blade_max_temp)
+# convert the surrogate model to a MILP model
+MILP_bt_1st = Model()
+set_optimizer(MILP_bt_1st, Gurobi.Optimizer)
+set_silent(MILP_bt_1st)
+set_attribute(MILP_bt_1st, "TimeLimit", 10)
 
+build_time = @elapsed compressed_model_1st, removed_neurons_1st, bounds_U_1st, bounds_L_1st = NN_formulate!(MILP_bt_1st, model_1st, sampling_config_1st_filtered.ub, sampling_config_1st_filtered.lb; bound_tightening="fast", compress=true, silent=false)
+@objective(MILP_bt_1st, Min, MILP_bt_1st[:x][2,1])
 
-#-----strategy 2: error based resampling
+set_attribute(MILP_bt_1st, "TimeLimit", 1800)
+unset_silent(MILP_bt_1st)
+log_filename = "gurobi_log_1st_bt_$(Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")).log"
+set_optimizer_attribute(MILP_bt_1st, "LogFile", joinpath(@__DIR__, log_filename))
+solving_time = @elapsed optimize!(MILP_bt_1st)
+write_to_file(MILP_bt_1st, joinpath(@__DIR__, "model_1st_bt.mps"))
 
-x_belows, x_aboves = find_max_errs(data_temp, model_init, x_star_init)
-sampling_config_1st_eb = generate_resample_config(sampling_config_init, x_star_init, 1.05, ("fixed_percentage_density", 1.0), "error_based", x_below = x_belows, x_above = x_aboves)
+x_star_1st = [value.(MILP_bt_1st[:x][0,i]) for i in 1:length(MILP_bt_1st[:x][0,:])]
+# x_star_1st = [value.(MILP_bt_1st[:x][0,i]) for i in 1:length(MILP_bt_1st[:x][0,:])] .* std_1st_filtered .+ mean_1st_filtered
 
+solution_evaluate(MILP_bt_1st, blade_max_temp)
 
-#-----strategy 3: sagmented error based resampling
-plots_array = plot_segmented_errs(data_temp, model_init, x_star_init, 50)
-# Combine all the individual plots into one composite plot
-plot(plots_array..., layout=(10, 1), size=(500, 200 * 10))
+# store multiple solutions in the solution pool
+num_solutions_1st_filtered = MOI.get(MILP_bt_1st, MOI.ResultCount())
+sol_pool_x_1st_filtered, _ = sol_pool(MILP_bt_1st, num_solutions_1st_filtered)
 
-x_belows, x_aboves = find_max_segmented_errs(data_temp, model_init, x_star_init, 50)
-sampling_config_1st_seb = generate_resample_config(sampling_config_init, x_star_init, 1.05, ("fixed_percentage_density", 1.0), "segmented_error", x_below = x_belows, x_above = x_aboves)
+# visualise the surrogate model
+fig = plot_dual_contours(data_temp_1st_filtered, model_1st, x_star_1st, "sol_pool", sol_pool_x_1st_filtered, [1,2], 1)
+Makie.save(joinpath(root, "images/exp1_1st_dual_sol_pool.png.png"), fig)
+
+#------------ apply Monte Carlo Dropout to the surrogate model ------------#
+config_temp_1st_dp = NN_Config([6,50,50,1], [relu, relu, identity], false, 0.0, 0.1, Flux.Optimise.Optimiser(Adam(0.1, (0.9, 0.999)), ExpDecay(1.0)), 1, size(data_temp_1st_filtered.x_train)[2], 1000, 1)
+
+train_time_1st_dp = @elapsed result_temp_1st_dp = NN_train(data_temp_1st_filtered, config_temp_1st_dp, trained_model = model_1st)
+NN_results(config_temp_1st_dp, result_temp_1st_dp)
+model_1st_dp = result_temp_1st_dp.model
+
+pred_1st, pred_dist_1st, means_1st, stds_1st, x_top_std_1st = predict_dist(data_temp_1st_filtered, model_1st_dp, 100, 10)
+fig = plot_dual_contours(data_temp_1st_filtered, model_1st, x_star_1st, "x_top_std", [col for col in eachcol(x_top_std_1st)], [1,2], 1)
+Makie.save(joinpath(root, "images/exp1_1st_dual_top_std.png"), fig)
+
+#------------------------------ 2nd iteration --------------------------#
+# Resample densely around the points with the highest uncertainty
+sampling_configs_2nd, sampling_config_2nd = generate_resample_configs_mc(sampling_config_1st_filtered, [x_top_std_1st x_star_1st hcat(sol_pool_x_1st_filtered...)[:, 2:end]], 0.10, 0.3, zeros(Float64, 6, 1), ones(Float64, 6, 1))
+
+data_temp_2nd_new = generate_and_combine_data(blade_max_temp, sampling_configs_2nd, SobolSample(), 0.8)
+data_temp_2nd = combine_datasets(data_temp_1st_filtered, data_temp_2nd_new)
+data_temp_2nd_filtered = filter_data_within_bounds(data_temp_2nd, sampling_config_2nd.lb, sampling_config_2nd.ub)
+
+x_2nd_added = hcat(data_temp_2nd_new.x_train, data_temp_2nd_new.x_test)
+
+Plots.scatter(x_2nd_added[1, :], x_2nd_added[2, :], color = :lightgreen, xlabel="x₁", ylabel="x₂", legend=:bottomright, label="Resampled Data")
+Plots.scatter!(data_temp_1st_filtered.x_train[1, :], data_temp_1st_filtered.x_train[2, :], color = :viridis, xlabel="x₁", ylabel="x₂", legend=:bottomright, label="Training Data (1st iteration)")
+Plots.scatter!(data_temp_1st_filtered.x_test[1, :], data_temp_1st_filtered.x_test[2, :], color = :orange, legend=:bottomright, label="Test Data (1st iteration)")
+vline!([sampling_config_2nd.lb[1],sampling_config_2nd.ub[1]], label="x₁ bounds", linestyle=:dashdot, color=:red, linewidth = 2)
+hline!([sampling_config_2nd.lb[2],sampling_config_2nd.ub[2]], label="x₂ bounds", linestyle=:dashdot, color=:purple, linewidth = 2)
+savefig(joinpath(root, "images/exp1_2nd_scattered_point.svg"))
+
+println("# New added samples: ", sampling_config_2nd.n_samples)
+println(" # Previous samples: " ,sampling_config_1st_filtered.n_samples)
+println(" # Filtered samples: ", size(data_temp_2nd_filtered.x_train)[2] + size(data_temp_2nd_filtered.x_test)[2])
+
+sampling_config_2nd_filtered = Sampling_Config(
+    sampling_config_2nd.n_samples,
+    sampling_config_2nd.lb,
+    sampling_config_2nd.ub
+)
+
+config_temp_2nd = NN_Config([6,50,50,1], [relu, relu, identity], false, 0.1, 0.0, Flux.Optimise.Optimiser(Adam(0.1, (0.9, 0.999)), ExpDecay(1.0)), 1, size(data_temp_2nd_filtered.x_train)[2], 1000, 1)
+
+train_time_2nd = @elapsed result_temp_2nd = NN_train(data_temp_2nd_filtered, config_temp_2nd, trained_model = model_1st)
+NN_results(config_temp_2nd, result_temp_2nd)
+
+model_2nd = result_temp_2nd.model
+BSON.@save joinpath(@__DIR__, "surrogate_2nd.bson") model_2nd
+BSON.@load joinpath(@__DIR__, "surrogate_2nd.bson") model_2nd
+
+# convert the surrogate model to a MILP model
+MILP_bt_2nd = Model()
+set_optimizer(MILP_bt_2nd, Gurobi.Optimizer)
+set_silent(MILP_bt_2nd)
+set_attribute(MILP_bt_2nd, "TimeLimit", 10)
+
+build_time = @elapsed compressed_model_2nd, removed_neurons_2nd, bounds_U_2nd, bounds_L_2nd = NN_formulate!(MILP_bt_2nd, model_2nd, sampling_config_2nd_filtered.ub, sampling_config_2nd_filtered.lb; bound_tightening="fast", compress=true, silent=false)
+@objective(MILP_bt_2nd, Min, MILP_bt_2nd[:x][3,1])
+
+set_attribute(MILP_bt_2nd, "TimeLimit", 1800)
+unset_silent(MILP_bt_2nd)
+log_filename = "gurobi_log_2nd_bt_$(Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")).log"
+set_optimizer_attribute(MILP_bt_2nd, "LogFile", joinpath(@__DIR__, log_filename))
+solving_time = @elapsed optimize!(MILP_bt_2nd)
+write_to_file(MILP_bt_2nd, joinpath(@__DIR__, "model_2nd_bt.mps"))
+
+x_star_2nd = [value.(MILP_bt_2nd[:x][0,i]) for i in 1:length(MILP_bt_2nd[:x][0,:])]
+
+solution_evaluate(MILP_bt_2nd, blade_max_temp)
+
+# store multiple solutions in the solution pool
+num_solutions_2nd_filtered = MOI.get(MILP_bt_2nd, MOI.ResultCount())
+sol_pool_x_2nd_filtered, _ = sol_pool(MILP_bt_2nd, num_solutions_2nd_filtered)
+
+# visualise the surrogate model
+fig = plot_dual_contours(data_temp_2nd_filtered, model_2nd, x_star_2nd, "sol_pool", sol_pool_x_2nd_filtered, [1,2], 1)
+Makie.save(joinpath(root, "images/exp1_2nd_dual_sol_pool.png.png"), fig)
+
+#------------ apply Monte Carlo Dropout to the surrogate model ------------#
+config_temp_2nd_dp = NN_Config([6,50,50,1], [relu, relu, identity], false, 0.0, 0.1, Flux.Optimise.Optimiser(Adam(0.1, (0.9, 0.999)), ExpDecay(1.0)), 1, size(data_temp_2nd_filtered.x_train)[2], 1000, 1)
+
+train_time_2nd_dp = @elapsed result_temp_2nd_dp = NN_train(data_temp_2nd_filtered, config_temp_2nd_dp, trained_model = model_2nd)
+NN_results(config_temp_2nd_dp, result_temp_2nd_dp)
+model_2nd_dp = result_temp_2nd_dp.model
+
+pred_2nd, pred_dist_2nd, means_2nd, stds_2nd, x_top_std_2nd = predict_dist(data_temp_2nd_filtered, model_2nd_dp, 100, 10)
+fig = plot_dual_contours(data_temp_2nd_filtered, model_2nd, x_star_2nd, "x_top_std", [col for col in eachcol(x_top_std_2nd)], [1,2], 1)
+Makie.save(joinpath(root, "images/exp1_2nd_dual_top_std.png"), fig)
+
+#------------------------------ 3rd iteration --------------------------#
+
+sampling_configs_3rd, sampling_config_3rd = generate_resample_configs_mc(sampling_config_2nd_filtered, [x_top_std_2nd x_star_2nd hcat(sol_pool_x_2nd_filtered...)[:, 2:end]], 0.10, 0.3, zeros(Float64, 6, 1), ones(Float64, 6, 1))
+
+data_temp_3rd_new = generate_and_combine_data(blade_max_temp, sampling_configs_3rd, SobolSample(), 0.8)
+data_temp_3rd = combine_datasets(data_temp_2nd_filtered, data_temp_3rd_new)
+data_temp_3rd_filtered = filter_data_within_bounds(data_temp_3rd, sampling_config_3rd.lb, sampling_config_3rd.ub)
+
+x_3rd_added = hcat(data_temp_3rd_new.x_train, data_temp_3rd_new.x_test)
+
+Plots.scatter(x_3rd_added[1, :], x_3rd_added[2, :], color = :lightgreen, xlabel="x₁", ylabel="x₂", legend=:bottomright, label="Resampled Data", size = (530, 500), legendfontsize = 10, tickfontsize = 10, labelfontsize = 14)
+Plots.scatter!(data_temp_2nd_filtered.x_train[1, :], data_temp_2nd_filtered.x_train[2, :], color = :viridis, xlabel="x₁", ylabel="x₂", legend=:bottomright, label="Training Data (2nd iteration)", legendfontsize = 10, tickfontsize = 10, labelfontsize = 14)
+Plots.scatter!(data_temp_2nd_filtered.x_test[1, :], data_temp_2nd_filtered.x_test[2, :], color = :orange, legend=:bottomright, label="Test Data (2nd iteration)", legendfontsize = 10, tickfontsize = 10, labelfontsize = 14)
+vline!([sampling_config_3rd.lb[1],sampling_config_3rd.ub[1]], label="x₁ bounds", linestyle=:dashdot, color=:red, linewidth = 2, legendfontsize = 10, tickfontsize = 10, labelfontsize = 14)
+hline!([sampling_config_3rd.lb[2],sampling_config_3rd.ub[2]], label="x₂ bounds", linestyle=:dashdot, color=:purple, linewidth = 2, legendfontsize = 10, tickfontsize = 10, labelfontsize = 14)
+savefig(joinpath(root, "images/exp1_3rd_scattered_point.pdf"))
+
+println("# New added samples: ", sampling_config_3rd.n_samples)
+println(" # Previous samples: " ,sampling_config_2nd_filtered.n_samples)
+println(" # Filtered samples: ", size(data_temp_3rd_filtered.x_train)[2] + size(data_temp_3rd_filtered.x_test)[2])
+
+sampling_config_3rd_filtered = Sampling_Config(
+    sampling_config_3rd.n_samples,
+    sampling_config_3rd.lb,
+    sampling_config_3rd.ub
+)
+
+config_temp_3rd = NN_Config([6,50,50,1], [relu, relu, identity], false, 0.1, 0.3, Flux.Optimise.Optimiser(Adam(0.1, (0.9, 0.999)), ExpDecay(0.1)), 1, size(data_temp_3rd_filtered.x_train)[2], 1000, 1)
+
+train_time_3rd = @elapsed result_temp_3rd = NN_train(data_temp_3rd_filtered, config_temp_3rd, trained_model = model_2nd)
+NN_results(config_temp_3rd, result_temp_3rd)
+
+model_3rd = result_temp_3rd.model
+BSON.@save joinpath(@__DIR__, "surrogate_3rd.bson") model_3rd
+BSON.@load joinpath(@__DIR__, "surrogate_3rd.bson") model_3rd
+
+# convert the surrogate model to a MILP model
+MILP_bt_3rd = Model()
+set_optimizer(MILP_bt_3rd, Gurobi.Optimizer)
+set_silent(MILP_bt_3rd)
+set_attribute(MILP_bt_3rd, "TimeLimit", 10)
+
+build_time = @elapsed compressed_model_3rd, removed_neurons_3rd, bounds_U_3rd, bounds_L_3rd = NN_formulate!(MILP_bt_3rd, model_3rd, sampling_config_3rd_filtered.ub, sampling_config_3rd_filtered.lb; bound_tightening="fast", compress=true, silent=false)
+@objective(MILP_bt_3rd, Min, MILP_bt_3rd[:x][3,1])
+
+set_attribute(MILP_bt_3rd, "TimeLimit", 1800)
+unset_silent(MILP_bt_3rd)
+log_filename = "gurobi_log_3rd_bt_$(Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")).log"
+set_optimizer_attribute(MILP_bt_3rd, "LogFile", joinpath(@__DIR__, log_filename))
+solving_time = @elapsed optimize!(MILP_bt_3rd)
+write_to_file(MILP_bt_3rd, joinpath(@__DIR__, "model_3rd_bt.mps"))
+
+x_star_3rd = [value.(MILP_bt_3rd[:x][0,i]) for i in 1:length(MILP_bt_3rd[:x][0,:])]
+solution_evaluate(MILP_bt_3rd, blade_max_temp)
+
+# store multiple solutions in the solution pool
+num_solutions_3rd_filtered = MOI.get(MILP_bt_3rd, MOI.ResultCount())
+sol_pool_x_3rd_filtered, _ = sol_pool(MILP_bt_3rd, num_solutions_3rd_filtered)
+
+# visualise the surrogate model
+fig = plot_dual_contours(data_temp_3rd_filtered, model_3rd, x_star_3rd, "sub-optimal solutions", sol_pool_x_3rd_filtered, [1,2], 1)
+Makie.save(joinpath(root, "images/exp1_3rd_dual_sol_pool.pdf"), fig)

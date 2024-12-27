@@ -1,14 +1,14 @@
 # module NNSurrogate
 
 using Plots
-using GLMakie
+using GLMakie, CairoMakie
 using Statistics, StatsBase
 using Surrogates
 using Flux
 using Flux: params, train!
 using LinearAlgebra
-# using SurrogatesFlux
-# using Lathe.preprocess: TrainTestSplit
+using LaTeXStrings
+
 
 # export NN_Data, NN_Config, NN_Result
 # export generate_data, normalise_data, load_data
@@ -640,10 +640,14 @@ function plot_dual_contours(data::NN_Data, model::Chain, x_star::Vector{Float64}
     levels = range(global_min, stop = global_max, length = 11)  # 10 intervals
 
     # plot the tricontour of the true output and the surrogate output
-    fig = Figure(size = (800, 400))
+    fig = Figure(size = (750, 400))
+    # fig = Figure(size = (800, 400))  # for the blade design problem
 
-    ax1 = Axis(fig[1, 1], xlabel = "x_$(selected_dim_x[1])", ylabel = "x_$(selected_dim_x[2])", title = "Simulator")
-    ax2 = Axis(fig[1, 3], xlabel = "x_$(selected_dim_x[1])", ylabel = "x_$(selected_dim_x[2])", title = "Surrogate")
+    ax1 = Axis(fig[1, 1], xlabel = "x₁",
+    ylabel = "x₂", title = "Simulator",xlabelsize = 15, ylabelsize = 15, xlabelfont="Arial", ylabelfont="Arial")
+    
+    ax2 = Axis(fig[1, 3], xlabel = "x₁",
+    ylabel = "x₂", title = "Surrogate", xlabelsize = 15, ylabelsize = 15, xlabelfont="Arial", ylabelfont="Arial")
     
     # plot the tricontour of the true output
     tr_true = tricontourf!(ax1, x1_unique, x2_unique, y_true_unique, levels = levels, triangulation = Makie.DelaunayTriangulation(), colormap = :viridis)
@@ -657,16 +661,16 @@ function plot_dual_contours(data::NN_Data, model::Chain, x_star::Vector{Float64}
     
     # plot the scattered points
     sca2 = Makie.scatter!(NaN, NaN)
-    start_index = scattered_point_label == "sol_pool" ? 2 : 1
+    start_index = scattered_point_label == "sub-optimal solutions" ? 2 : 1
     # in case Solution count = 1
-    if scattered_point_label == "sol_pool" && size(scattered_point, 1) == 1
-        Legend(fig[2, :], [sca], ["x_star"], orientation = :horizontal)
+    if scattered_point_label == "current optimum" && size(scattered_point, 1) == 1
+        Legend(fig[2, :], [sca], [L"\hat{x}^*"], orientation = :horizontal, labelsize = 15)
     else
         for val in scattered_point[start_index:end]
             sca2 = Makie.scatter!(ax1, val[selected_dim_x[1]], val[selected_dim_x[2]], color = :orange)
             sca2 = Makie.scatter!(ax2, val[selected_dim_x[1]], val[selected_dim_x[2]], color = :orange)
         end
-        Legend(fig[2, :], [sca, sca2], ["x_star", scattered_point_label], orientation = :horizontal)
+        Legend(fig[2, :], [sca, sca2], ["current optimum", scattered_point_label], orientation = :horizontal, labelsize = 15)
 
     end
     
@@ -695,10 +699,9 @@ function plot_single_contour(data::NN_Data, model::Chain, x_star::Vector{Float64
     # extract the output
     y = results[unique_ind]
 
-    
     # plot the tricontour of the true output and the surrogate output
-    fig = Figure(size = (400, 420))
-    ax1 = Axis(fig[1, 1], xlabel = "x_$(selected_dim[1])", ylabel = "x_$(selected_dim[2])", title = label)
+    fig = Figure(size = (400, 410))
+    ax1 = Axis(fig[1, 1], xlabel = "x₁", ylabel = "x₂", title = label)
     sca1 = Makie.scatter!(ax1, x_star[selected_dim[1]], x_star[selected_dim[2]], color = :green)
     # plot the tricontour of the true output
     tr = tricontourf!(ax1, x1_unique, x2_unique, y, triangulation = Makie.DelaunayTriangulation(), colormap = :viridis)
@@ -717,7 +720,7 @@ function plot_single_contour(data::NN_Data, model::Chain, x_star::Vector{Float64
     # tr.climits = color_limits
     
     Colorbar(fig[1, 2], tr)
-    Legend(fig[2, :], [sca1, sca2], ["x_star", scattered_point_label], orientation = :horizontal)
+    Legend(fig[2, :], [sca1, sca2], ["current optimum", scattered_point_label], orientation = :horizontal, labelsize = 15)
 
     return fig
 
