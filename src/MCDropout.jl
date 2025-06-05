@@ -6,6 +6,8 @@ using Distributions  # Required for Normal distribution functions
 # get the predictive distribution
 function predict_dist(data::NN_Data, model::Chain, pred_n::Int=100, top_n::Int=10)
 
+    start_time = time()
+
     x = hcat(data.x_train, data.x_test)
     num_samples = size(x, 2)
     output_dim = size(model(x[:, 1]), 1)
@@ -22,15 +24,18 @@ function predict_dist(data::NN_Data, model::Chain, pred_n::Int=100, top_n::Int=1
     end
 
     # calculate mean and standard deviation for each dimension
-    means = mean(predictions)
     stds = std(predictions)
+    computation_time = time() - start_time
+
+    means = mean(predictions)
+    
 
     # find indices of the points with the highest overall standard deviation
     overall_stds = mean(stds, dims=1)
     top_indices = sortperm(vec(overall_stds), rev=true)[1:top_n]
     top_points = x[:, top_indices]
 
-    return predictions, predictions_per_sample, means, stds, top_points
+    return predictions, predictions_per_sample, means, stds, top_points, computation_time
     
 end
 
@@ -283,6 +288,8 @@ end
 
 function generate_resample_configs_mc(sampling_config::Sampling_Config, x_top_var::Matrix, scalar_radius::Float64, scalar_n_samples::Float64, mean::Matrix, std::Matrix)
     
+    start_time = time()
+
     # Determine the number of parameters (dimensions) and points
     num_parameters, num_points = size(x_top_var)
     
@@ -322,6 +329,10 @@ function generate_resample_configs_mc(sampling_config::Sampling_Config, x_top_va
     n_samples = sum([config.n_samples for config in new_configs])
     new_config = Sampling_Config(n_samples, min_lb, max_ub)
 
-    return new_configs, new_config
+    computation_time = time() - start_time
+
+    return new_configs, new_config, computation_time
 end
+
+
 

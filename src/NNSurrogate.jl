@@ -1,7 +1,7 @@
 # module NNSurrogate
 
 using Plots
-using GLMakie, CairoMakie
+using CairoMakie
 using Statistics, StatsBase
 using Surrogates
 using Flux
@@ -137,6 +137,8 @@ function extract_data_from_given_dataset(x_not_selected, y_not_selected, configs
     results_y = []
     sampled_indices_per_config = []
 
+    start_time = time()
+
     # Filter x and y points based on Sampling_Config bounds
     for config in configs
         valid_indices = findall(i -> all(config.lb .<= x_not_selected[:, i] .<= config.ub), 1:size(x_not_selected, 2))
@@ -156,8 +158,10 @@ function extract_data_from_given_dataset(x_not_selected, y_not_selected, configs
         push!(results_y, y_not_selected[:, sampled_indices])
 
     end
+
+    computation_time = time() - start_time
        
-    return results_x, results_y, vcat(sampled_indices_per_config...)
+    return results_x, results_y, vcat(sampled_indices_per_config...), computation_time
 
 end
 
@@ -613,7 +617,7 @@ function plot_learning_curve(config::NN_Config, loss_hist::Vector)
 end
 
 # visualise the surrogate model using tricontour plot, marking other points worth mentioning
-function plot_dual_contours(data::NN_Data, model::Chain, x_star::Vector{Float64}, scattered_point_label::String, scattered_point, selected_dim_x::Vector{Int}, selected_dim_y::Int=1)
+function plot_dual_contours(data::NN_Data, model::Chain, x_star::Vector{Float64}, scattered_point_label::String, scattered_point, selected_dim_x::Vector{Int}, selected_dim_y::Int=1, global_optimum::Union{Nothing, Vector{Float64}}=nothing)
     
     # extract the selected dimensions
     x = hcat(data.x_train, data.x_test)
@@ -652,12 +656,12 @@ function plot_dual_contours(data::NN_Data, model::Chain, x_star::Vector{Float64}
     # plot the tricontour of the true output
     tr_true = tricontourf!(ax1, x1_unique, x2_unique, y_true_unique, levels = levels, triangulation = Makie.DelaunayTriangulation(), colormap = :viridis)
     # Makie.scatter!(ax1, x_star[selected_dim_x[1]], x_star[selected_dim_x[2]], color = y_true)
-    sca = Makie.scatter!(ax1, x_star[selected_dim_x[1]], x_star[selected_dim_x[2]], color = :green)
+    sca = Makie.scatter!(ax1, x_star[selected_dim_x[1]], x_star[selected_dim_x[2]], color = :lightblue)
     # text!(ax1, x_star[selected_dim_x[1]], x_star[selected_dim_x[2]], text = "x_star", align = (:center, :top))
     
     # plot the tricontour of the surrogate output
     tr_pred = tricontourf!(ax2, x1_unique, x2_unique, y_pred_unique, levels = levels, triangulation = Makie.DelaunayTriangulation(), colormap = :viridis)
-    sca = Makie.scatter!(ax2, x_star[selected_dim_x[1]], x_star[selected_dim_x[2]], color = :green)
+    sca = Makie.scatter!(ax2, x_star[selected_dim_x[1]], x_star[selected_dim_x[2]], color = :lightblue)
     
     # plot the scattered points
     sca2 = Makie.scatter!(NaN, NaN)
@@ -670,7 +674,14 @@ function plot_dual_contours(data::NN_Data, model::Chain, x_star::Vector{Float64}
             sca2 = Makie.scatter!(ax1, val[selected_dim_x[1]], val[selected_dim_x[2]], color = :orange)
             sca2 = Makie.scatter!(ax2, val[selected_dim_x[1]], val[selected_dim_x[2]], color = :orange)
         end
-        Legend(fig[2, :], [sca, sca2], ["current optimum", scattered_point_label], orientation = :horizontal, labelsize = 15)
+
+        if !isnothing(global_optimum)
+            sca3 = Makie.scatter!(ax1, global_optimum[selected_dim_x[1]], global_optimum[selected_dim_x[2]], color = :red)
+            sca3 = Makie.scatter!(ax2, global_optimum[selected_dim_x[1]], global_optimum[selected_dim_x[2]], color = :red)
+            Legend(fig[2, :], [sca, sca2, sca3], ["current optimum", scattered_point_label, "global optimum"], orientation = :horizontal, labelsize = 15)
+        else
+            Legend(fig[2, :], [sca, sca2], ["current optimum", scattered_point_label], orientation = :horizontal, labelsize = 15)
+        end
 
     end
     
@@ -680,7 +691,6 @@ function plot_dual_contours(data::NN_Data, model::Chain, x_star::Vector{Float64}
     return fig
 
 end
-
 
 # visualise the scattered data points using tricontour plot
 function plot_single_contour(data::NN_Data, model::Chain, x_star::Vector{Float64}, label::String, results::Vector, scattered_point_label::String, scattered_point, selected_dim::Vector{Int})

@@ -94,23 +94,6 @@ model_init = result_reformer.model
 BSON.@save joinpath(@__DIR__, "surrogate_init.bson") model_init
 BSON.@load joinpath(@__DIR__, "surrogate_init.bson") model_init
 
-#------------ big-M ------------#
-# bounds of the input layer, and the other layers (arbitrary large big-M)
-L_bounds = vcat(Float32.(sampling_config_init.lb), fill(Float32(-1e6), 52))
-U_bounds = vcat(Float32.(sampling_config_init.ub), fill(Float32(1e6), 52))
-
-# convert the trained nerual net to a JuMP model
-build_time = @elapsed MILP_model = JuMP_Model(model_init, L_bounds, U_bounds)
-
-# m.obj = pyo.Objective(expr=m.reformer.outputs[h2_idx], sense=pyo.maximize)
-@objective(MILP_model, Max, MILP_model[:x][5,10])
-# m.con = pyo.Constraint(expr=m.reformer.outputs[n2_idx] <= 0.34)
-@constraint(MILP_model, MILP_model[:x][5,12] <= (0.34 - mean_init_y[12])/std_init_y[12])
-
-optimize!(MILP_model)
-
-#-------------------------------#
-
 # convert the surrogate model to a MILP model
 @info "bound tightening and compression (Gogeta.jl)"
 MILP_bt = Model()
@@ -208,8 +191,8 @@ sampling_config_1st_filtered_norm = Sampling_Config(
     (sampling_config_1st.ub .- vec(mean_1st_filtered)) ./ vec(std_1st_filtered)
 )
 
-config_reformer_1st = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 223, 100, 1)
-train_time_1st = @elapsed result_reformer_1st = NN_train(data_reformer_1st_filtered_norm, config_reformer_1st, trained_model = model_init)
+config_reformer_1st = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 223, 100, 0)
+train_time_1st = @elapsed result_reformer_1st = NN_train(data_reformer_1st_filtered_norm, config_reformer_1st)
 NN_results(config_reformer_1st, result_reformer_1st)
 
 model_1st = result_reformer_1st.model
@@ -252,62 +235,6 @@ sol_pool_x_1st_filtered, _ = sol_pool(MILP_bt_1st, num_solutions_1st_filtered, m
 fig = plot_dual_contours(data_reformer_1st_filtered_norm, model_1st, x_star_1st_norm, "sol_pool", sol_pool_x_1st_filtered, [1,2], 10)
 Makie.save(joinpath(root, "images/Comparison of Simulator and Surrogate Model Contours with Optimal Solution Points 1st Iteration_filtered.png"), fig)
 
-@info "option 2: train with the whole combined data"
-size(data_reformer_1st.x_train)
-size(data_reformer_1st.x_test)
-
-data_reformer_1st_norm, mean_1st, std_1st, mean_1st_y, std_1st_y = normalise_data(data_reformer_1st, true)
-sampling_config_1st_norm = Sampling_Config(
-    sampling_config_1st.n_samples,
-    (sampling_config_1st.lb .- vec(mean_1st)) ./ vec(std_1st),
-    (sampling_config_1st.ub .- vec(mean_1st)) ./ vec(std_1st)
-)
-
-config_reformer_1st = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 858, 100, 1)
-train_time = @elapsed result_reformer_1st_whole = NN_train(data_reformer_1st_norm, config_reformer_1st, trained_model = model_init)
-NN_results(config_reformer_1st, result_reformer_1st_whole)
-
-model_1st_whole = result_reformer_1st_whole.model
-BSON.@save joinpath(@__DIR__, "surrogate_1st_whole.bson") model_1st_whole
-BSON.@load joinpath(@__DIR__, "surrogate_1st_whole.bson") model_1st_whole
-
-# convert the surrogate model to a MILP model
-MILP_bt_1st_whole = Model()
-set_optimizer(MILP_bt_1st_whole, Gurobi.Optimizer)
-set_silent(MILP_bt_1st_whole)
-set_attribute(MILP_bt_1st_whole, "TimeLimit", 10)
-
-# Layer 4 & 5 will be fully removed when setting "compress=true" and "bound_tightening=standard"
-compressed_model_1st_whole, removed_neurons_1st_whole, bounds_U_1st_whole, bounds_L_1st_whole = NN_formulate!(MILP_bt_1st_whole, model_1st_whole, sampling_config_1st_norm.ub, sampling_config_1st_norm.lb; bound_tightening="fast", compress=true, silent=false)
-
-# m.obj = pyo.Objective(expr=m.reformer.outputs[h2_idx], sense=pyo.maximize)
-@objective(MILP_bt_1st_whole, Max, MILP_bt_1st_whole[:x][5,10])
-# m.con = pyo.Constraint(expr=m.reformer.outputs[n2_idx] <= 0.34)
-@constraint(MILP_bt_1st_whole, MILP_bt_1st_whole[:x][5,12] <= (0.34 - mean_1st_y[12])/std_1st_y[12])
-
-set_attribute(MILP_bt_1st_whole, "TimeLimit", 1800)
-unset_silent(MILP_bt_1st_whole)
-log_filename = "gurobi_log_1st_whole_bt_$(Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")).log"
-set_optimizer_attribute(MILP_bt_1st_whole, "LogFile", joinpath(@__DIR__, log_filename))
-optimize!(MILP_bt_1st_whole)
-write_to_file(MILP_bt_1st_whole, joinpath(@__DIR__, "model_1st_whole_bt.mps"))
-
-x_star_1st_whole_norm = [value.(MILP_bt_1st_whole[:x][0,i]) for i in 1:length(MILP_bt_1st_whole[:x][0,:])]
-x_star_1st_whole = [value.(MILP_bt_1st_whole[:x][0,i]) for i in 1:length(MILP_bt_1st_whole[:x][0,:])] .* std_1st .+ mean_1st
-
-println("Bypass Fraction:", x_star_1st_whole[1])
-println("NG Steam Ratio:", x_star_1st_whole[2])
-println("H2 Concentration:", objective_value(MILP_bt_1st_whole) * std_1st_y[10] + mean_1st_y[10])
-println("N2 Concentration:", value.(MILP_bt_1st_whole[:x][5,12]) * std_1st_y[12] + mean_1st_y[12])
-
-# store multiple solutions in the solution pool
-num_solutions_1st_whole = MOI.get(MILP_bt_1st_whole, MOI.ResultCount())
-sol_pool_x_1st_whole, _ = sol_pool(MILP_bt_1st_whole, num_solutions_1st_whole, mean = mean_1st, std = std_1st)
-
-# visualise the surrogate model
-plot_dual_contours(data_reformer_1st_norm, model_1st_whole, x_star_1st_whole_norm, "sol_pool", sol_pool_x_1st_whole, [1,2], 10)
-Makie.save(joinpath(root, "images/Comparison of Simulator and Surrogate Model Contours with Optimal Solution Points 1st Iteration_whole.png"), fig)
-
 #------------ apply Monte Carlo Dropout to the surrogate model ------------#
 config_reformer_dp = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.2, Adam(0.001, (0.9, 0.999), 1e-07), 1, 800, 100, 0)
 train_time = @elapsed result_reformer = NN_train(data_reformer_1st_filtered_norm, config_reformer_dp)
@@ -347,8 +274,8 @@ sampling_config_2nd_filtered_norm = Sampling_Config(
     (sampling_config_2nd.ub .- vec(mean_2nd_filtered)) ./ vec(std_2nd_filtered)
 )
 
-config_reformer_2nd = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 197, 100, 1)
-train_time_2nd = @elapsed result_reformer_2nd = NN_train(data_reformer_2nd_filtered_norm, config_reformer_2nd, trained_model = model_1st)
+config_reformer_2nd = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 197, 100, 0)
+train_time_2nd = @elapsed result_reformer_2nd = NN_train(data_reformer_2nd_filtered_norm, config_reformer_2nd)
 NN_results(config_reformer_2nd, result_reformer_2nd)
 
 model_2nd = result_reformer_2nd.model
@@ -422,8 +349,8 @@ sampling_config_3rd_filtered_norm = Sampling_Config(
     (sampling_config_3rd.ub .- vec(mean_3rd_filtered)) ./ vec(std_3rd_filtered)
 )
 
-config_reformer_3rd = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 177, 100, 1)
-train_time_3rd = @elapsed result_reformer_3rd = NN_train(data_reformer_3rd_filtered_norm, config_reformer_3rd, trained_model = model_2nd)
+config_reformer_3rd = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 177, 100, 0)
+train_time_3rd = @elapsed result_reformer_3rd = NN_train(data_reformer_3rd_filtered_norm, config_reformer_3rd)
 NN_results(config_reformer_3rd, result_reformer_3rd)
 
 model_3rd = result_reformer_3rd.model
@@ -498,8 +425,8 @@ sampling_config_4th_filtered_norm = Sampling_Config(
     (sampling_config_4th.ub .- vec(mean_4th_filtered)) ./ vec(std_4th_filtered)
 )
 
-config_reformer_4th = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 114, 100, 1)
-train_time_4th = @elapsed result_reformer_4th = NN_train(data_reformer_4th_filtered_norm, config_reformer_4th, trained_model = model_3rd)
+config_reformer_4th = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 114, 100, 0)
+train_time_4th = @elapsed result_reformer_4th = NN_train(data_reformer_4th_filtered_norm, config_reformer_4th)
 NN_results(config_reformer_4th, result_reformer_4th)
 
 model_4th = result_reformer_4th.model
@@ -535,7 +462,236 @@ println("N2 Concentration:", value.(MILP_bt_4th[:x][5,12]) * std_4th_filtered_y[
 num_solutions_4th_filtered = MOI.get(MILP_bt_4th, MOI.ResultCount())
 sol_pool_x_4th_filtered, _ = sol_pool(MILP_bt_4th, num_solutions_4th_filtered, mean = mean_4th_filtered, std = std_4th_filtered)
 
-fig = plot_dual_contours(data_reformer_4th_filtered_norm, model_4th, x_star_4th_norm, "sub-optimal solutions", sol_pool_x_4th_filtered, [1,2], 10)
+fig = plot_dual_contours(data_reformer_4th_filtered_norm, model_4th, x_star_4th_norm, "sol_pool", sol_pool_x_4th_filtered, [1,2], 10)
 Makie.save(joinpath(root, "images/Comparison of Simulator and Surrogate Model Contours with Optimal Solution Points 4th Iteration_filtered.pdf"), fig)
 
+#------------ apply Monte Carlo Dropout to the surrogate model ------------#
+config_reformer_dp = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.2, Adam(0.001, (0.9, 0.999), 1e-07), 1, 800, 100, 0)
+train_time = @elapsed result_reformer = NN_train(data_reformer_4th_filtered_norm, config_reformer_dp)
+NN_results(config_reformer_dp, result_reformer)
+model_4th_dp = result_reformer.model
 
+pred_4th, pred_dist_4th, means_4th, stds_4th, x_top_std_4th, mc_time_4th = predict_dist(data_reformer_4th_filtered_norm, model_4th_dp, 100, 50)
+
+#------------------------------ 5th iteration --------------------------#
+# Resample densely around the points with the highest uncertainty
+sampling_configs_5th, sampling_config_5th = generate_resample_configs_mc(sampling_config_4th_filtered_norm, [x_top_std_4th x_star_4th_norm], 0.10, 0.3, mean_4th_filtered, std_4th_filtered)
+_, _, selected_indices_5th, resample_data_time_5th =  extract_data_from_given_dataset(x_not_selected, y_not_selected, sampling_configs_5th, complement_indices)
+
+x_5th_added = x[:, selected_indices_5th]
+y_5th_added = y[:, selected_indices_5th]
+x_5th = x[:, vcat(selected_indices_5th, selected_indices_4th, selected_indices_3rd, selected_indices_2nd, selected_indices_1st, selected_indices)]
+y_5th = y[:, vcat(selected_indices_5th, selected_indices_4th, selected_indices_3rd, selected_indices_2nd, selected_indices_1st, selected_indices)]
+
+data_reformer_5th = NN_Data()
+train_data_5th, test_data_5th = Flux.splitobs((x_5th, y_5th), at = 0.8)
+data_reformer_5th.x_train = Float32.(train_data_5th[1])
+data_reformer_5th.y_train = Float32.(train_data_5th[2])
+data_reformer_5th.x_test = Float32.(test_data_5th[1])
+data_reformer_5th.y_test = Float32.(test_data_5th[2])
+
+@info "option 1: train with the filtered combined data"
+# train with the filtered combined data
+data_reformer_5th_filtered = filter_data_within_bounds(data_reformer_5th, sampling_config_5th.lb, sampling_config_5th.ub)
+size(data_reformer_5th_filtered.x_train)
+size(data_reformer_5th_filtered.x_test)
+
+data_reformer_5th_filtered_norm, mean_5th_filtered, std_5th_filtered, mean_5th_filtered_y, std_5th_filtered_y = normalise_data(data_reformer_5th_filtered, true)
+
+sampling_config_5th_filtered_norm = Sampling_Config(
+    sampling_config_5th.n_samples,
+    (sampling_config_5th.lb .- vec(mean_5th_filtered)) ./ vec(std_5th_filtered),
+    (sampling_config_5th.ub .- vec(mean_5th_filtered)) ./ vec(std_5th_filtered)
+)
+
+config_reformer_5th = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 114, 100, 0)
+train_time_5th = @elapsed result_reformer_5th = NN_train(data_reformer_5th_filtered_norm, config_reformer_5th)
+NN_results(config_reformer_5th, result_reformer_5th)
+
+model_5th = result_reformer_5th.model
+
+# convert the surrogate model to a MILP model
+
+MILP_bt_5th = Model()
+set_optimizer(MILP_bt_5th, Gurobi.Optimizer)
+set_silent(MILP_bt_5th)
+set_attribute(MILP_bt_5th, "TimeLimit", 10)
+
+build_time = @elapsed compressed_model_5th, removed_neurons_5th, bounds_U_5th, bounds_L_5th = NN_formulate!(MILP_bt_5th, model_5th, sampling_config_5th_filtered_norm.ub, sampling_config_5th_filtered_norm.lb; bound_tightening="standard", compress=true, silent=false)
+
+# m.obj = pyo.Objective(expr=m.reformer.outputs[h2_idx], sense=pyo.maximize)
+@objective(MILP_bt_5th, Max, MILP_bt_5th[:x][5,10])
+# m.con = pyo.Constraint(expr=m.reformer.outputs[n2_idx] <= 0.34)
+@constraint(MILP_bt_5th, MILP_bt_5th[:x][5,12] <= (0.34 - mean_5th_filtered_y[12])/std_5th_filtered_y[12])
+
+set_attribute(MILP_bt_5th, "TimeLimit", 1800)
+unset_silent(MILP_bt_5th)
+# log_filename = "gurobi_log_5th_bt_$(Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")).log"
+# set_optimizer_attribute(MILP_bt_5th, "LogFile", joinpath(@__DIR__, log_filename))
+solving_time = @elapsed optimize!(MILP_bt_5th)
+
+x_star_5th_norm = [value.(MILP_bt_5th[:x][0,i]) for i in 1:length(MILP_bt_5th[:x][0,:])]
+x_star_5th = [value.(MILP_bt_5th[:x][0,i]) for i in 1:length(MILP_bt_5th[:x][0,:])] .* std_5th_filtered .+ mean_5th_filtered
+
+println("Bypass Fraction:", x_star_5th[1])
+println("NG Steam Ratio:", x_star_5th[2])
+println("H2 Concentration:", objective_value(MILP_bt_5th) * std_5th_filtered_y[10] + mean_5th_filtered_y[10])
+println("N2 Concentration:", value.(MILP_bt_5th[:x][5,12]) * std_5th_filtered_y[12] + mean_5th_filtered_y[12])
+
+num_solutions_5th_filtered = MOI.get(MILP_bt_5th, MOI.ResultCount())
+sol_pool_x_5th_filtered, _ = sol_pool(MILP_bt_5th, num_solutions_5th_filtered, mean = mean_5th_filtered, std = std_5th_filtered)
+
+fig = plot_dual_contours(data_reformer_5th_filtered_norm, model_5th, x_star_5th_norm, "sol_pool", sol_pool_x_5th_filtered, [1,2], 10)
+Makie.save(joinpath(root, "images/Comparison of Simulator and Surrogate Model Contours with Optimal Solution Points 5th Iteration_filtered.pdf"), fig)
+
+#------------ apply Monte Carlo Dropout to the surrogate model ------------#
+config_reformer_dp = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.2, Adam(0.001, (0.9, 0.999), 1e-07), 1, 800, 100, 0)
+train_time = @elapsed result_reformer = NN_train(data_reformer_5th_filtered_norm, config_reformer_dp)
+NN_results(config_reformer_dp, result_reformer)
+model_5th_dp = result_reformer.model
+
+pred_5th, pred_dist_5th, means_5th, stds_5th, x_top_std_5th, mc_time_5th = predict_dist(data_reformer_5th_filtered_norm, model_5th_dp, 100, 50)
+
+#------------------------------ 6th iteration --------------------------#
+# Resample densely around the points with the highest uncertainty
+sampling_configs_6th, sampling_config_6th = generate_resample_configs_mc(sampling_config_5th_filtered_norm, [x_top_std_5th x_star_5th_norm], 0.10, 0.3, mean_5th_filtered, std_5th_filtered)
+_, _, selected_indices_6th, resample_data_time_6th =  extract_data_from_given_dataset(x_not_selected, y_not_selected, sampling_configs_6th, complement_indices)
+
+x_6th_added = x[:, selected_indices_6th]
+y_6th_added = y[:, selected_indices_6th]
+x_6th = x[:, vcat(selected_indices_6th, selected_indices_5th, selected_indices_4th, selected_indices_3rd, selected_indices_2nd, selected_indices_1st, selected_indices)]
+y_6th = y[:, vcat(selected_indices_6th, selected_indices_5th, selected_indices_4th, selected_indices_3rd, selected_indices_2nd, selected_indices_1st, selected_indices)]
+
+data_reformer_6th = NN_Data()
+train_data_6th, test_data_6th = Flux.splitobs((x_6th, y_6th), at = 0.8)
+data_reformer_6th.x_train = Float32.(train_data_6th[1])
+data_reformer_6th.y_train = Float32.(train_data_6th[2])
+data_reformer_6th.x_test = Float32.(test_data_6th[1])
+data_reformer_6th.y_test = Float32.(test_data_6th[2])
+
+@info "option 1: train with the filtered combined data"
+# train with the filtered combined data
+data_reformer_6th_filtered = filter_data_within_bounds(data_reformer_6th, sampling_config_6th.lb, sampling_config_6th.ub)
+size(data_reformer_6th_filtered.x_train)
+size(data_reformer_6th_filtered.x_test)
+
+data_reformer_6th_filtered_norm, mean_6th_filtered, std_6th_filtered, mean_6th_filtered_y, std_6th_filtered_y = normalise_data(data_reformer_6th_filtered, true)
+
+sampling_config_6th_filtered_norm = Sampling_Config(
+    sampling_config_6th.n_samples,
+    (sampling_config_6th.lb .- vec(mean_6th_filtered)) ./ vec(std_6th_filtered),
+    (sampling_config_6th.ub .- vec(mean_6th_filtered)) ./ vec(std_6th_filtered)
+)
+
+config_reformer_6th = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 114, 100, 0)
+train_time_6th = @elapsed result_reformer_6th = NN_train(data_reformer_6th_filtered_norm, config_reformer_6th)
+NN_results(config_reformer_6th, result_reformer_6th)
+
+model_6th = result_reformer_6th.model
+
+# convert the surrogate model to a MILP model
+
+MILP_bt_6th = Model()
+set_optimizer(MILP_bt_6th, Gurobi.Optimizer)
+set_silent(MILP_bt_6th)
+set_attribute(MILP_bt_6th, "TimeLimit", 10)
+
+build_time = @elapsed compressed_model_6th, removed_neurons_6th, bounds_U_6th, bounds_L_6th = NN_formulate!(MILP_bt_6th, model_6th, sampling_config_6th_filtered_norm.ub, sampling_config_6th_filtered_norm.lb; bound_tightening="standard", compress=true, silent=false)
+
+# m.obj = pyo.Objective(expr=m.reformer.outputs[h2_idx], sense=pyo.maximize)
+@objective(MILP_bt_6th, Max, MILP_bt_6th[:x][5,10])
+# m.con = pyo.Constraint(expr=m.reformer.outputs[n2_idx] <= 0.34)
+@constraint(MILP_bt_6th, MILP_bt_6th[:x][5,12] <= (0.34 - mean_6th_filtered_y[12])/std_6th_filtered_y[12])
+
+set_attribute(MILP_bt_6th, "TimeLimit", 1800)
+unset_silent(MILP_bt_6th)
+# log_filename = "gurobi_log_6th_bt_$(Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")).log"
+# set_optimizer_attribute(MILP_bt_6th, "LogFile", joinpath(@__DIR__, log_filename))
+solving_time = @elapsed optimize!(MILP_bt_6th)
+
+x_star_6th_norm = [value.(MILP_bt_6th[:x][0,i]) for i in 1:length(MILP_bt_6th[:x][0,:])]
+x_star_6th = [value.(MILP_bt_6th[:x][0,i]) for i in 1:length(MILP_bt_6th[:x][0,:])] .* std_6th_filtered .+ mean_6th_filtered
+
+println("Bypass Fraction:", x_star_6th[1])
+println("NG Steam Ratio:", x_star_6th[2])
+println("H2 Concentration:", objective_value(MILP_bt_6th) * std_6th_filtered_y[10] + mean_6th_filtered_y[10])
+println("N2 Concentration:", value.(MILP_bt_6th[:x][5,12]) * std_6th_filtered_y[12] + mean_6th_filtered_y[12])
+
+num_solutions_6th_filtered = MOI.get(MILP_bt_6th, MOI.ResultCount())
+sol_pool_x_6th_filtered, _ = sol_pool(MILP_bt_6th, num_solutions_6th_filtered, mean = mean_6th_filtered, std = std_6th_filtered)
+
+fig = plot_dual_contours(data_reformer_6th_filtered_norm, model_6th, x_star_6th_norm, "sol_pool", sol_pool_x_6th_filtered, [1,2], 10)
+Makie.save(joinpath(root, "images/Comparison of Simulator and Surrogate Model Contours with Optimal Solution Points 6th Iteration_filtered.pdf"), fig)
+
+#------------ apply Monte Carlo Dropout to the surrogate model ------------#
+config_reformer_dp = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.2, Adam(0.001, (0.9, 0.999), 1e-07), 1, 800, 100, 0)
+train_time = @elapsed result_reformer = NN_train(data_reformer_6th_filtered_norm, config_reformer_dp)
+NN_results(config_reformer_dp, result_reformer)
+model_6th_dp = result_reformer.model
+
+pred_6th, pred_dist_6th, means_6th, stds_6th, x_top_std_6th, mc_time_6th = predict_dist(data_reformer_6th_filtered_norm, model_6th_dp, 100, 50)
+
+#------------------------------ 7th iteration --------------------------#
+# Resample densely around the points with the highest uncertainty
+sampling_configs_7th, sampling_config_7th = generate_resample_configs_mc(sampling_config_6th_filtered_norm, [x_top_std_6th x_star_6th_norm], 0.10, 0.3, mean_6th_filtered, std_6th_filtered)
+_, _, selected_indices_7th, resample_data_time_7th =  extract_data_from_given_dataset(x_not_selected, y_not_selected, sampling_configs_7th, complement_indices)
+
+x_7th_added = x[:, selected_indices_7th]
+y_7th_added = y[:, selected_indices_7th]
+x_7th = x[:, vcat(selected_indices_7th, selected_indices_6th, selected_indices_5th, selected_indices_4th, selected_indices_3rd, selected_indices_2nd, selected_indices_1st, selected_indices)]
+y_7th = y[:, vcat(selected_indices_7th, selected_indices_6th, selected_indices_5th, selected_indices_4th, selected_indices_3rd, selected_indices_2nd, selected_indices_1st, selected_indices)]
+
+data_reformer_7th = NN_Data()
+train_data_7th, test_data_7th = Flux.splitobs((x_7th, y_7th), at = 0.8)
+data_reformer_7th.x_train = Float32.(train_data_7th[1])
+data_reformer_7th.y_train = Float32.(train_data_7th[2])
+data_reformer_7th.x_test = Float32.(test_data_7th[1])
+data_reformer_7th.y_test = Float32.(test_data_7th[2])
+
+@info "option 1: train with the filtered combined data"
+# train with the filtered combined data
+data_reformer_7th_filtered = filter_data_within_bounds(data_reformer_7th, sampling_config_7th.lb, sampling_config_7th.ub)
+size(data_reformer_7th_filtered.x_train)
+size(data_reformer_7th_filtered.x_test)
+
+data_reformer_7th_filtered_norm, mean_7th_filtered, std_7th_filtered, mean_7th_filtered_y, std_7th_filtered_y = normalise_data(data_reformer_7th_filtered, true)
+
+sampling_config_7th_filtered_norm = Sampling_Config(
+    sampling_config_7th.n_samples,
+    (sampling_config_7th.lb .- vec(mean_7th_filtered)) ./ vec(std_7th_filtered),
+    (sampling_config_7th.ub .- vec(mean_7th_filtered)) ./ vec(std_7th_filtered)
+)
+
+config_reformer_7th = NN_Config([2,10,10,10,10,12], [relu, relu, relu, relu, identity], false, 0, 0.0, Adam(0.001, (0.9, 0.999), 1e-07), 1, 114, 100, 0)
+train_time_7th = @elapsed result_reformer_7th = NN_train(data_reformer_7th_filtered_norm, config_reformer_7th)
+NN_results(config_reformer_7th, result_reformer_7th)
+
+model_7th = result_reformer_7th.model
+
+# convert the surrogate model to a MILP model
+
+MILP_bt_7th = Model()
+set_optimizer(MILP_bt_7th, Gurobi.Optimizer)
+set_silent(MILP_bt_7th)
+set_attribute(MILP_bt_7th, "TimeLimit", 10)
+
+build_time = @elapsed compressed_model_7th, removed_neurons_7th, bounds_U_7th, bounds_L_7th = NN_formulate!(MILP_bt_7th, model_7th, sampling_config_7th_filtered_norm.ub, sampling_config_7th_filtered_norm.lb; bound_tightening="standard", compress=true, silent=false)
+
+# m.obj = pyo.Objective(expr=m.reformer.outputs[h2_idx], sense=pyo.maximize)
+@objective(MILP_bt_7th, Max, MILP_bt_7th[:x][5,10])
+# m.con = pyo.Constraint(expr=m.reformer.outputs[n2_idx] <= 0.34)
+@constraint(MILP_bt_7th, MILP_bt_7th[:x][5,12] <= (0.34 - mean_7th_filtered_y[12])/std_7th_filtered_y[12])
+
+set_attribute(MILP_bt_7th, "TimeLimit", 1800)
+unset_silent(MILP_bt_7th)
+# log_filename = "gurobi_log_7th_bt_$(Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")).log"
+# set_optimizer_attribute(MILP_bt_7th, "LogFile", joinpath(@__DIR__, log_filename))
+solving_time = @elapsed optimize!(MILP_bt_7th)
+
+x_star_7th_norm = [value.(MILP_bt_7th[:x][0,i]) for i in 1:length(MILP_bt_7th[:x][0,:])]
+x_star_7th = [value.(MILP_bt_7th[:x][0,i]) for i in 1:length(MILP_bt_7th[:x][0,:])] .* std_7th_filtered .+ mean_7th_filtered
+
+println("Bypass Fraction:", x_star_7th[1])
+println("NG Steam Ratio:", x_star_7th[2])
+println("H2 Concentration:", objective_value(MILP_bt_7th) * std_7th_filtered_y[10] + mean_7th_filtered_y[10])
+println("N2 Concentration:", value.(MILP_bt_7th[:x][5,12]) * std_7th_filtered_y[12] + mean_7th_filtered_y[12])
