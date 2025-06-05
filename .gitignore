@@ -1,0 +1,24 @@
+# Julia
+Manifest.toml
+*.jl.cov
+*.jl.*.cov
+
+# Local development
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Plots
+*.png
+*.pdf
+*.svg
+*.eps
+*.ps
+
+# Temporary files
+*.tmp
+*.temp
+*~
+
+# Log files
+*.log
