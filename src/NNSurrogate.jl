@@ -139,11 +139,7 @@ end
 # sample data points from given dataset and track their original indices
 function extract_data_from_given_dataset(x_not_selected, y_not_selected, configs::Vector{Sampling_Config}, complement_indices)
 
-    # results_x = []
-    # results_y = []
     all_sampled_indices = []
-    # sampled_indices_per_config = []
-
     start_time = time()
 
     # Filter x and y points based on Sampling_Config bounds
@@ -157,12 +153,6 @@ function extract_data_from_given_dataset(x_not_selected, y_not_selected, configs
             println("Not enough data points meet the criteria for config with bounds $(config.lb) to $(config.ub)")
             sampled_indices = valid_indices    
         end
-
-        # Store the original indices of the sampled data points
-        # original_indices = complement_indices[sampled_indices]
-        # push!(sampled_indices_per_config, original_indices)
-        # push!(results_x, x_not_selected[:, sampled_indices])
-        # push!(results_y, y_not_selected[:, sampled_indices])
 
         # Collect all sampled indices
         append!(all_sampled_indices, sampled_indices)
