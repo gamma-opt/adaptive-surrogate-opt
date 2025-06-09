@@ -1,4 +1,4 @@
-# duplicated from Gogeta.jl, with modifications on the number of layers
+# duplicated from Gogeta.jl (https://github.com/gamma-opt/Gogeta.jl), with modifications on the number of layers
 
 """
     function NN_formulate!(jump_model::JuMP.Model, NN_model::Flux.Chain, U_in, L_in; U_bounds=nothing, L_bounds=nothing, U_out=nothing, L_out=nothing, bound_tightening="fast", compress=false, parallel=false, silent=true)

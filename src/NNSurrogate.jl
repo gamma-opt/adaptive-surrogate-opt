@@ -1,5 +1,3 @@
-# module NNSurrogate
-
 using Plots
 using CairoMakie
 using Statistics, StatsBase
@@ -8,11 +6,7 @@ using Flux
 using Flux: params, train!
 using LinearAlgebra
 using LaTeXStrings
-
-
-# export NN_Data, NN_Config, NN_Result
-# export generate_data, normalise_data, load_data
-# export NN_train, NN_compare, plot_learning_curve
+using DataFrames, CSV
 
 mutable struct NN_Data
     x_train::Matrix
@@ -104,6 +98,18 @@ function load_data(file_path::String, splits::Float64, num_features::Int, num_ou
 
 end
 
+function create_nn_data(x, y; splits = 0.8)
+    data = NN_Data()
+    train_data, test_data = Flux.splitobs((x, y), at = splits)
+    
+    data.x_train = Float32.(train_data[1])
+    data.y_train = Float32.(train_data[2])
+    data.x_test = Float32.(test_data[1])
+    data.y_test = Float32.(test_data[2])
+    
+    return data
+end
+
 function generate_and_combine_data(f::Function, configs::Vector{Sampling_Config}, sampling_method::Any, splits::Float64)
     
     combined_x_train, combined_y_train, combined_x_test, combined_y_test = [], [], [], []
@@ -133,9 +139,10 @@ end
 # sample data points from given dataset and track their original indices
 function extract_data_from_given_dataset(x_not_selected, y_not_selected, configs::Vector{Sampling_Config}, complement_indices)
 
-    results_x = []
-    results_y = []
-    sampled_indices_per_config = []
+    # results_x = []
+    # results_y = []
+    all_sampled_indices = []
+    # sampled_indices_per_config = []
 
     start_time = time()
 
@@ -152,16 +159,29 @@ function extract_data_from_given_dataset(x_not_selected, y_not_selected, configs
         end
 
         # Store the original indices of the sampled data points
-        original_indices = complement_indices[sampled_indices]
-        push!(sampled_indices_per_config, original_indices)
-        push!(results_x, x_not_selected[:, sampled_indices])
-        push!(results_y, y_not_selected[:, sampled_indices])
+        # original_indices = complement_indices[sampled_indices]
+        # push!(sampled_indices_per_config, original_indices)
+        # push!(results_x, x_not_selected[:, sampled_indices])
+        # push!(results_y, y_not_selected[:, sampled_indices])
+
+        # Collect all sampled indices
+        append!(all_sampled_indices, sampled_indices)
 
     end
 
+    # Get unique indices and extract corresponding data
+    unique_sampled_indices = unique(all_sampled_indices)
+    results_x = x_not_selected[:, unique_sampled_indices]
+    results_y = y_not_selected[:, unique_sampled_indices]
+
+    selected_indices = complement_indices[unique_sampled_indices]
+
+    println("Number of data points added: $(length(selected_indices))")
+    
+    complement_indices = setdiff(complement_indices, selected_indices)
     computation_time = time() - start_time
        
-    return results_x, results_y, vcat(sampled_indices_per_config...), computation_time
+    return results_x, results_y, selected_indices, complement_indices, computation_time
 
 end
 
@@ -389,166 +409,6 @@ function NN_compare(data::NN_Data, configs::Vector{NN_Config}; trained_model::Ch
     return results_cp
 end
 
-# find the point with the maximum error below and above x_star
-function find_max_errs(data::NN_Data, model::Chain, x_star::Vector{Float64})
-    
-    # Concatenate training and testing data
-    x = hcat(data.x_train, data.x_test)
-    y = hcat(data.y_train, data.y_test)
-
-    # Calculate the errors (absolute difference)
-    errors = abs.(model(x) .- y)
-
-    # Initialize vectors to store the point with maximum error below and above x_star for each dimension
-    x_belows = copy(x_star)
-    x_aboves = copy(x_star)
-
-    # Iterate through each dimension to find the point with max error below and above x_star
-    for i in 1:length(x_star)
-        # Identify indices where x is below and above x_star[i]
-        below_indices = findall(x[i, :] .< x_star[i])
-        above_indices = findall(x[i, :] .> x_star[i])
-
-        # Calculate errors for below and above points
-        if !isempty(below_indices)
-            below_errors = errors[below_indices]
-            max_below_idx = below_indices[argmax(below_errors)]
-            x_belows[i] = x[i, max_below_idx]  # Store the i-th dimension of the point with the maximum below error
-        else
-            x_belows[i] = x_star[i]
-        end
-
-        if !isempty(above_indices)
-            above_errors = errors[above_indices]
-            max_above_idx = above_indices[argmax(above_errors)]
-            x_aboves[i] = x[i, max_above_idx]  # Store the i-th dimension of the point with the maximum above error
-        else
-            x_aboves[i] = x_star[i]
-        end
-    end
-
-    return x_belows, x_aboves
-end
-
-
-# calculate the segmented errors for a certain dimension
-function calculate_segmented_errs(x, errors, x_star, n_segments)
-    
-    min_val, max_val = minimum(x), maximum(x)
-    bin_edges = range(min_val, stop=max_val, length=n_segments+1)
-
-    # Initialize tracking variables for maximum error and corresponding midpoints
-    max_error_above = -Inf
-    max_error_below = -Inf
-    mid_point_above = x_star
-    mid_point_below = x_star
-    
-    # Initialize an array to store errors for all segments
-    all_segment_errors = Vector{Vector{Float32}}(undef, n_segments)
-
-    for i = 1:n_segments
-        in_segment = (x .>= bin_edges[i]) .& (x .< bin_edges[i+1])
-        segment_errors = errors[in_segment]
-
-        # Store segment errors
-        all_segment_errors[i] = segment_errors
-
-        # Skip the loop iteration if the segment is empty
-        if isempty(segment_errors)
-            continue
-        end
-
-        segment_mean_error = mean(segment_errors)
-        segment_mid_point = (bin_edges[i] + bin_edges[i+1]) / 2
-
-        # Update maximum errors and midpoints for segments above and below x_star
-        if segment_mid_point > x_star && segment_mean_error > max_error_above
-            max_error_above = segment_mean_error
-            mid_point_above = segment_mid_point
-        end
-        if segment_mid_point < x_star && segment_mean_error > max_error_below
-            max_error_below = segment_mean_error
-            mid_point_below = segment_mid_point
-        end
-    end
-
-    # Return the midpoints for the highest error segments and errors for all segments
-    return mid_point_below, mid_point_above, all_segment_errors
-end
-
-function find_max_segmented_errs(data::NN_Data, model::Chain, x_star::Vector{Float64}, n_segments::Int)
-    
-    # Concatenate training and testing data
-    x = hcat(data.x_train, data.x_test)
-    y = hcat(data.y_train, data.y_test)
-
-    # Initialize vectors to store x_below and x_above
-    x_belows = Float64[]
-    x_aboves = Float64[]
-    # Calculate errors for each sample
-    errors = abs.(model(x) .- y)
-
-    for i in 1:size(x, 1)
-        x_below, x_above, _ = calculate_segmented_errs(x[i,:], errors, x_star[i], n_segments)
-        push!(x_belows, x_below)
-        push!(x_aboves, x_above)
-    end
-
-    return x_belows, x_aboves
-
-end
-
-# plot segmented errors 
-function plot_segmented_errs(data::NN_Data, model::Chain, x_star::Vector{Float64}, n_segments::Int) 
-    
-    # Concatenate training and testing data
-    x = hcat(data.x_train, data.x_test)
-    y = hcat(data.y_train, data.y_test)
-
-    # Calculate errors for each sample
-    errors = abs.(model(x) .- y)
-
-    # Create an empty array to hold all the individual plots
-    plots_array = []
-
-    for i in 1:size(x, 1)
-        # Calculate midpoints, segment errors, and get all segment errors for the current variable
-        mid_point_below, mid_point_above, all_segment_errors = calculate_segmented_errs(x[i, :], errors, x_star[i], n_segments)
-
-        # Calculate the midpoints of each segment for plotting
-        min_val, max_val = minimum(x[i, :]), maximum(x[i, :])
-        bin_edges = range(min_val, stop = max_val, length = n_segments+1)
-        segment_midpoints = [(bin_edges[j] + bin_edges[j+1]) / 2 for j in 1:n_segments]
-        
-        # Calculate mean errors for each segment where possible
-        segment_mean_errors = Float32[isempty(segment) ? NaN : mean(segment) for segment in all_segment_errors]
-
-        # Create the individual plot for this variable
-        p = bar(segment_midpoints, segment_mean_errors, legend=false, title="Variable $i", xlabel="Segment Midpoint", ylabel="Mean Error", alpha=0.75)
-        
-        # Ensure x_star is included in the x-axis range
-        extended_min_val = min(min_val, x_star[i]) - 1
-        extended_max_val = max(max_val, x_star[i]) + 1
-        xlims!(p, extended_min_val, extended_max_val)
-        
-        # Highlighting the x_star with a vertical line
-        vline!(p, [x_star[i]], line=(:dash, 2), color=:red, label="x_star")
-
-        # Add annotation for x_star at the top of the plot
-        max_y_value = maximum(segment_mean_errors[.!isnan.(segment_mean_errors)]) * 1.05
-        annotate!(p, [(x_star[i], max_y_value, "x_star")])
-
-        # Marking mid_point_below and mid_point_above with scatter points
-        scatter!(p, [mid_point_below], [max_y_value], color=:green, label="mid_point_below")
-        scatter!(p, [mid_point_above], [max_y_value], color=:blue, label="mid_point_above")
-
-        # Store the plot in the array
-        push!(plots_array, p)
-    end
-
-    return plots_array
-
-end
 
 function generate_resample_config(sampling_config::Sampling_Config, x_star::Vector{Float64}, scale_factor::Float64, sample_size_method::Tuple{String, Float64},
     strategy::String; x_above::Vector{Float64} = Vector{Float64}(), x_below::Vector{Float64} = Vector{Float64}())
@@ -736,4 +596,4 @@ function plot_single_contour(data::NN_Data, model::Chain, x_star::Vector{Float64
 
 end
 
-# end # module
+# end 
