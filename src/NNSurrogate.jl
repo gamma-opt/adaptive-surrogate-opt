@@ -95,7 +95,6 @@ function load_data(file_path::String, splits::Float64, num_features::Int, num_ou
     data_flame.y_test = Float32.(test_data[2])
 
     return data_flame
-
 end
 
 function create_nn_data(x, y; splits = 0.8)
@@ -172,7 +171,6 @@ function extract_data_from_given_dataset(x_not_selected, y_not_selected, configs
     computation_time = time() - start_time
        
     return results_x, results_y, selected_indices, complement_indices, computation_time
-
 end
 
 # filters the data based on the provided lower and upper bounds
@@ -216,7 +214,6 @@ function combine_datasets(data1::NN_Data, data2::NN_Data; splits::Float64=0.8)::
     data.y_test = Float32.(test_data[2])
 
     return data
-
 end
 
 # normalise the data
@@ -273,7 +270,6 @@ function loss_mape(x, y, model)
 
     mape_loss = mean(abs.((model(x) .- y) ./ y)) 
     return mape_loss
-
 end
 
 # process the training of Neural Network
@@ -399,54 +395,6 @@ function NN_compare(data::NN_Data, configs::Vector{NN_Config}; trained_model::Ch
     return results_cp
 end
 
-
-function generate_resample_config(sampling_config::Sampling_Config, x_star::Vector{Float64}, scale_factor::Float64, sample_size_method::Tuple{String, Float64},
-    strategy::String; x_above::Vector{Float64} = Vector{Float64}(), x_below::Vector{Float64} = Vector{Float64}())
-
-    
-    lb_prev = sampling_config.lb
-    ub_prev = sampling_config.ub
-    interval_prev = sampling_config.ub - sampling_config.lb
-    size_prev = sampling_config.n_samples
-    density_prev = interval_prev / sampling_config.n_samples
-
-    # strategy 1: fixed percentage of the search space
-    if strategy == "fixed_percentage"
-        sampling_config.lb = max.(x_star .- 0.5 * scale_factor * interval_prev, lb_prev)
-        sampling_config.ub = min.(x_star .+ 0.5 * scale_factor * interval_prev, ub_prev)
-    # strategy 2: error based resampling
-    elseif strategy == "error_based"
-        # x_above and x_below are provided for error_based strategy
-        if isempty(x_above) || isempty(x_below)
-            error("x_above and x_below must be provided for the error_based strategy.")
-        end
-        sampling_config.lb = max.(x_star .- scale_factor * abs.(x_star - x_below), lb_prev)
-        sampling_config.ub = min.(x_star .+ scale_factor * abs.(x_star - x_above), ub_prev)
-    # strategy 3: segmented error based
-    elseif strategy == "segmented_error"
-        # x_above and x_below are provided for segmented_error strategy
-        if isempty(x_above) || isempty(x_below)
-            error("x_above and x_below must be provided for the segmented_error strategy.")
-        end
-        sampling_config.lb = max.(x_star .- scale_factor * abs.(x_star - x_below), lb_prev)
-        sampling_config.ub = min.(x_star .+ scale_factor * abs.(x_star - x_above), ub_prev)     
-    else
-        error("Invalid resampling strategy specified.")
-    end
-
-    # determine the number of samples based on the specified method
-    if sample_size_method[1] == "fixed_percentage_density"
-        sampling_config.n_samples = round(Int, maximum((sampling_config.ub - sampling_config.lb) ./ (sample_size_method[2] * density_prev)))
-    elseif sample_size_method[1] == "fixed_percentage_size"
-        sampling_config.n_samples = round(Int, sample_size_method[2] * size_prev)
-    else
-        error("Invalid sample size method specified.")
-    end
-
-    return sampling_config
-end
-
-
 # visualisation
 
 # plot the learning curve based on the loss history
@@ -539,7 +487,6 @@ function plot_dual_contours(data::NN_Data, model::Chain, x_star::Vector{Float64}
     Colorbar(fig[1, 4], tr_pred)
 
     return fig
-
 end
 
 # visualise the scattered data points using tricontour plot
@@ -583,7 +530,4 @@ function plot_single_contour(data::NN_Data, model::Chain, x_star::Vector{Float64
     Legend(fig[2, :], [sca1, sca2], ["current optimum", scattered_point_label], orientation = :horizontal, labelsize = 15)
 
     return fig
-
 end
-
-# end 

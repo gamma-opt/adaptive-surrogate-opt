@@ -28,7 +28,6 @@ function predict_dist(data::NN_Data, model::Chain, pred_n::Int=100, top_n::Int=1
 
     means = mean(predictions)
     
-
     # find indices of the points with the highest overall standard deviation
     overall_stds = mean(stds, dims=1)
     top_indices = sortperm(vec(overall_stds), rev=true)[1:top_n]
@@ -90,7 +89,6 @@ function generate_resample_configs_mc(sampling_config::Sampling_Config, x_top_va
     adjusted_n_samples = Int(ceil(sampling_config.n_samples * scalar_n_samples / num_points))
     
     # Initialise a vector to hold all the new sampling configurations
-    # new_configs_norm = Vector{Sampling_Config}(undef, num_points)
     new_configs = Vector{Sampling_Config}(undef, num_points)
     
     # Loop through each high variance point to create new sampling configs
@@ -107,7 +105,6 @@ function generate_resample_configs_mc(sampling_config::Sampling_Config, x_top_va
         end
         
         # Create a new Sampling_Config for the current high variance point
-        # new_configs_norm[i] = Sampling_Config(adjusted_n_samples, new_lb, new_ub)
         new_configs[i] = Sampling_Config(adjusted_n_samples, new_lb .* vec(std) .+ vec(mean), new_ub .* vec(std) .+ vec(mean))     
     end
 
