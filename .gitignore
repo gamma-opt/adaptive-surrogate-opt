@@ -12,8 +12,6 @@ Thumbs.db
 *.png
 *.pdf
 *.svg
-*.eps
-*.ps
 
 # Temporary files
 *.tmp
